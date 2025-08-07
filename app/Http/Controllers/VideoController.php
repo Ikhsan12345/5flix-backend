@@ -9,62 +9,37 @@ use Illuminate\Support\Facades\Log;
 
 class VideoController extends Controller
 {
-    // List semua video
+    public function __construct()
+    {
+        // Proteksi admin untuk CUD operations
+        $this->middleware('auth:sanctum')->only(['store', 'update', 'destroy']);
+    }
+
     public function index()
     {
         return Video::all();
     }
 
-    // Simpan video baru (dengan upload file)
+    public function show($id)
+    {
+        return Video::findOrFail($id);
+    }
+
     public function store(Request $request)
     {
         try {
-            // Debug: Log SEMUA data yang diterima dengan detail
-            Log::info('=== VIDEO UPLOAD DEBUG START ===');
-            Log::info('Request Method:', ['method' => $request->method()]);
-            Log::info('Content Type:', ['content_type' => $request->header('Content-Type')]);
-            Log::info('All Input Data:', $request->all());
-            Log::info('All Files:', $request->allFiles());
+            // Manual admin check
+            if (!$request->user() || $request->user()->role !== 'admin') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized. Admin access required.'
+                ], 403);
+            }
 
-            // Debug setiap field individual
-            Log::info('Individual Field Check:', [
-                'title' => $request->input('title'),
-                'genre' => $request->input('genre'),
-                'description' => $request->input('description'),
-                'duration' => $request->input('duration'),
-                'year' => $request->input('year'),
-                'is_featured' => $request->input('is_featured'),
-                'has_thumbnail' => $request->hasFile('thumbnail'),
-                'has_video' => $request->hasFile('video'),
+            Log::info('=== VIDEO STORE START ===', [
+                'user_id' => $request->user()->id,
+                'user_role' => $request->user()->role
             ]);
-
-            // Debug file details jika ada
-            if ($request->hasFile('thumbnail')) {
-                $thumb = $request->file('thumbnail');
-                Log::info('Thumbnail File Details:', [
-                    'name' => $thumb->getClientOriginalName(),
-                    'extension' => $thumb->getClientOriginalExtension(),
-                    'mime' => $thumb->getMimeType(),
-                    'size' => $thumb->getSize(),
-                    'valid' => $thumb->isValid(),
-                    'error' => $thumb->getError()
-                ]);
-            }
-
-            if ($request->hasFile('video')) {
-                $vid = $request->file('video');
-                Log::info('Video File Details:', [
-                    'name' => $vid->getClientOriginalName(),
-                    'extension' => $vid->getClientOriginalExtension(),
-                    'mime' => $vid->getMimeType(),
-                    'size' => $vid->getSize(),
-                    'valid' => $vid->isValid(),
-                    'error' => $vid->getError()
-                ]);
-            }
-
-            // Validasi dengan rules yang lebih loose untuk debug
-            Log::info('Starting validation...');
 
             $rules = [
                 'title' => 'required|string|max:255',
@@ -72,104 +47,39 @@ class VideoController extends Controller
                 'description' => 'nullable|string',
                 'duration' => 'required|integer|min:1',
                 'year' => 'required|integer|min:1900|max:2030',
-                'is_featured' => 'nullable|in:0,1',  // Hanya terima 0 atau 1
+                'is_featured' => 'nullable|in:0,1',
                 'thumbnail' => 'required|file|image|mimes:jpg,jpeg,png|max:2048',
                 'video' => 'required|file|mimes:mp4,mkv,avi|max:102400',
             ];
 
-            Log::info('Validation Rules:', $rules);
+            $validated = $request->validate($rules);
 
-            // Validasi step by step
-            $messages = [
-                'title.required' => 'Judul video wajib diisi',
-                'title.string' => 'Judul harus berupa text',
-                'title.max' => 'Judul maksimal 255 karakter',
-                'genre.required' => 'Genre wajib diisi',
-                'duration.required' => 'Durasi wajib diisi',
-                'duration.integer' => 'Durasi harus berupa angka',
-                'year.required' => 'Tahun wajib diisi',
-                'year.integer' => 'Tahun harus berupa angka',
-                'is_featured.in' => 'is_featured harus berupa 0 atau 1',
-                'thumbnail.required' => 'Thumbnail wajib diupload',
-                'thumbnail.file' => 'Thumbnail harus berupa file',
-                'thumbnail.image' => 'Thumbnail harus berupa gambar',
-                'thumbnail.mimes' => 'Thumbnail harus format jpg, jpeg, atau png',
-                'thumbnail.max' => 'Thumbnail maksimal 2MB',
-                'video.required' => 'Video wajib diupload',
-                'video.file' => 'Video harus berupa file',
-                'video.mimes' => 'Video harus format mp4, mkv, atau avi',
-                'video.max' => 'Video maksimal 100MB',
-            ];
-
-            $validated = $request->validate($rules, $messages);
-            Log::info('Validation passed successfully:', $validated);
-
-            // Upload files
             $thumbnailUrl = null;
             $videoUrl = null;
 
-            // Upload thumbnail ke B2
             if ($request->hasFile('thumbnail')) {
-                Log::info('Starting thumbnail upload to B2...');
-                try {
-                    $thumbnailPath = $request->file('thumbnail')->store('thumbnails', 'b2');
-                    $thumbnailUrl = Storage::disk('b2')->url($thumbnailPath);
-                    Log::info('Thumbnail uploaded successfully:', [
-                        'path' => $thumbnailPath,
-                        'url' => $thumbnailUrl
-                    ]);
-                } catch (\Exception $e) {
-                    Log::error('Thumbnail upload failed:', [
-                        'error' => $e->getMessage(),
-                        'trace' => $e->getTraceAsString()
-                    ]);
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Gagal upload thumbnail: ' . $e->getMessage()
-                    ], 500);
-                }
+                $thumbnailPath = $request->file('thumbnail')->store('thumbnails', 'b2');
+                $thumbnailUrl = Storage::disk('b2')->url($thumbnailPath);
             }
 
-            // Upload video ke B2
             if ($request->hasFile('video')) {
-                Log::info('Starting video upload to B2...');
-                try {
-                    $videoPath = $request->file('video')->store('videos', 'b2');
-                    $videoUrl = Storage::disk('b2')->url($videoPath);
-                    Log::info('Video uploaded successfully:', [
-                        'path' => $videoPath,
-                        'url' => $videoUrl
-                    ]);
-                } catch (\Exception $e) {
-                    Log::error('Video upload failed:', [
-                        'error' => $e->getMessage(),
-                        'trace' => $e->getTraceAsString()
-                    ]);
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Gagal upload video: ' . $e->getMessage()
-                    ], 500);
-                }
+                $videoPath = $request->file('video')->store('videos', 'b2');
+                $videoUrl = Storage::disk('b2')->url($videoPath);
             }
 
-            // Siapkan data untuk database
             $videoData = [
-                'title'         => $request->title,
-                'genre'         => $request->genre,
-                'description'   => $request->description,
-                'duration'      => (int)$request->duration,
-                'year'          => (int)$request->year,
-                'is_featured'   => $request->is_featured == '1' ? true : false,
+                'title' => $request->title,
+                'genre' => $request->genre,
+                'description' => $request->description,
+                'duration' => (int)$request->duration,
+                'year' => (int)$request->year,
+                'is_featured' => $request->is_featured == '1' ? true : false,
                 'thumbnail_url' => $thumbnailUrl,
-                'video_url'     => $videoUrl,
+                'video_url' => $videoUrl,
             ];
 
-            Log::info('Data prepared for database:', $videoData);
-
-            // Simpan ke database
             $video = Video::create($videoData);
-            Log::info('Video saved to database successfully:', ['id' => $video->id]);
-            Log::info('=== VIDEO UPLOAD DEBUG END ===');
+            Log::info('Video created successfully', ['video_id' => $video->id]);
 
             return response()->json([
                 'success' => true,
@@ -177,24 +87,8 @@ class VideoController extends Controller
                 'data' => $video
             ], 201);
 
-        } catch (\Illuminate\Validation\ValidationException $e) {
-            Log::error('=== VALIDATION ERROR DETAILS ===');
-            Log::error('Validation Errors:', $e->errors());
-            Log::error('Failed Rules:', $e->validator->failed());
-            Log::error('Error Message:', $e->getMessage());
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $e->errors(),
-                'details' => 'Check the log for detailed validation errors'
-            ], 422);
-
         } catch (\Exception $e) {
-            Log::error('Unexpected error in video store:', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
+            Log::error('Store error:', ['error' => $e->getMessage()]);
             return response()->json([
                 'success' => false,
                 'message' => 'Server error: ' . $e->getMessage()
@@ -202,130 +96,346 @@ class VideoController extends Controller
         }
     }
 
-    // Method lainnya tetap sama
-    public function show($id)
-    {
-        return Video::findOrFail($id);
-    }
-
     public function update(Request $request, $id)
-{
-    try {
-        $video = Video::findOrFail($id);
+    {
+        // Set response headers untuk debugging
+        header('Content-Type: application/json');
 
-        // Validasi dan proses update video (seperti biasa)
-        $validated = $request->validate([
-            'title' => 'sometimes|required|string|max:255',
-            'genre' => 'sometimes|required|string|max:100',
-            'description' => 'nullable|string',
-            'duration' => 'sometimes|required|integer|min:1',
-            'year' => 'sometimes|required|integer|min:1900|max:2030',
-            'is_featured' => 'sometimes|boolean',
-            'thumbnail' => 'sometimes|file|image|mimes:jpg,jpeg,png|max:2048',
-            'video' => 'sometimes|file|mimes:mp4,mkv,avi|max:102400',
-        ]);
+        try {
+            Log::info('=== UPDATE REQUEST START ===');
+            Log::info('Video ID:', ['id' => $id, 'type' => gettype($id)]);
+            Log::info('Request method:', ['method' => $request->method()]);
+            Log::info('Request headers:', $request->headers->all());
+            Log::info('Raw input:', $request->all());
+            Log::info('JSON input:', $request->json() ? $request->json()->all() : 'No JSON');
 
-        // Debugging: Log data yang dikirim ke update
-        Log::info('Updating video data', [
-            'id' => $id,
-            'validated_data' => $validated
-        ]);
-
-        // Update thumbnail jika ada file baru
-        if ($request->hasFile('thumbnail')) {
-            // Hapus thumbnail lama dari B2
-            if ($video->thumbnail_url) {
-                $thumbnailPath = parse_url($video->thumbnail_url, PHP_URL_PATH);
-                $thumbnailPath = ltrim($thumbnailPath, '/');
-                Storage::disk('b2')->delete($thumbnailPath);
-                Log::info("Old thumbnail deleted from B2: {$thumbnailPath}");
+            // Manual admin check dengan detail logging
+            $user = $request->user();
+            if (!$user) {
+                Log::warning('No authenticated user found');
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthenticated. Please login first.'
+                ], 401);
             }
 
-            // Upload thumbnail baru
-            $thumbnailPath = $request->file('thumbnail')->store('thumbnails', 'b2');
-            $validated['thumbnail_url'] = Storage::disk('b2')->url($thumbnailPath);
-        }
+            Log::info('Authenticated user:', [
+                'id' => $user->id,
+                'username' => $user->username,
+                'role' => $user->role
+            ]);
 
-        // Update video jika ada file baru
-        if ($request->hasFile('video')) {
-            // Hapus video lama dari B2
+            if ($user->role !== 'admin') {
+                Log::warning('Non-admin user attempted update', [
+                    'user_id' => $user->id,
+                    'role' => $user->role
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized. Admin access required.'
+                ], 403);
+            }
+
+            // Validate ID
+            if (!is_numeric($id) || $id <= 0) {
+                Log::error('Invalid ID provided:', ['id' => $id]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invalid video ID format'
+                ], 400);
+            }
+
+            // Find video with detailed error handling
+            try {
+                $video = Video::findOrFail($id);
+                Log::info('Video found:', [
+                    'id' => $video->id,
+                    'title' => $video->title,
+                    'current_data' => $video->toArray()
+                ]);
+            } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+                Log::error('Video not found:', ['id' => $id]);
+                return response()->json([
+                    'success' => false,
+                    'message' => "Video dengan ID {$id} tidak ditemukan"
+                ], 404);
+            }
+
+            // Check if request has any data to update
+            $hasData = false;
+            $inputFields = ['title', 'genre', 'description', 'duration', 'year', 'is_featured'];
+            foreach ($inputFields as $field) {
+                if ($request->has($field)) {
+                    $hasData = true;
+                    Log::info("Field {$field} present:", ['value' => $request->input($field)]);
+                    break;
+                }
+            }
+
+            if (!$hasData && !$request->hasFile('thumbnail') && !$request->hasFile('video')) {
+                Log::info('No data provided for update');
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Tidak ada data yang dikirim untuk diupdate'
+                ], 400);
+            }
+
+            // More permissive validation rules
+            $rules = [];
+            $messages = [];
+
+            if ($request->has('title')) {
+                $rules['title'] = 'required|string|max:255';
+                $messages['title.required'] = 'Judul tidak boleh kosong';
+                $messages['title.string'] = 'Judul harus berupa teks';
+                $messages['title.max'] = 'Judul maksimal 255 karakter';
+            }
+
+            if ($request->has('genre')) {
+                $rules['genre'] = 'required|string|max:100';
+                $messages['genre.required'] = 'Genre tidak boleh kosong';
+            }
+
+            if ($request->has('description')) {
+                $rules['description'] = 'nullable|string';
+            }
+
+            if ($request->has('duration')) {
+                $rules['duration'] = 'required|integer|min:1';
+                $messages['duration.required'] = 'Durasi tidak boleh kosong';
+                $messages['duration.integer'] = 'Durasi harus berupa angka';
+                $messages['duration.min'] = 'Durasi minimal 1 menit';
+            }
+
+            if ($request->has('year')) {
+                $rules['year'] = 'required|integer|min:1900|max:2030';
+                $messages['year.required'] = 'Tahun tidak boleh kosong';
+                $messages['year.integer'] = 'Tahun harus berupa angka';
+                $messages['year.min'] = 'Tahun minimal 1900';
+                $messages['year.max'] = 'Tahun maksimal 2030';
+            }
+
+            if ($request->has('is_featured')) {
+                $rules['is_featured'] = 'boolean';
+            }
+
+            if ($request->hasFile('thumbnail')) {
+                $rules['thumbnail'] = 'file|image|mimes:jpg,jpeg,png|max:2048';
+            }
+
+            if ($request->hasFile('video')) {
+                $rules['video'] = 'file|mimes:mp4,mkv,avi|max:102400';
+            }
+
+            Log::info('Validation rules:', $rules);
+
+            try {
+                $validated = $request->validate($rules, $messages);
+                Log::info('Validation passed:', $validated);
+            } catch (\Illuminate\Validation\ValidationException $e) {
+                Log::error('Validation failed:', [
+                    'errors' => $e->errors(),
+                    'input' => $request->all()
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Data tidak valid',
+                    'errors' => $e->errors()
+                ], 422);
+            }
+
+            // Prepare update data safely
+            $updateData = [];
+
+            if ($request->has('title') && !empty(trim($request->input('title')))) {
+                $updateData['title'] = trim($request->input('title'));
+            }
+
+            if ($request->has('genre') && !empty(trim($request->input('genre')))) {
+                $updateData['genre'] = trim($request->input('genre'));
+            }
+
+            if ($request->has('description')) {
+                $updateData['description'] = $request->input('description') ? trim($request->input('description')) : null;
+            }
+
+            if ($request->has('duration')) {
+                $duration = $request->input('duration');
+                if (is_numeric($duration) && $duration > 0) {
+                    $updateData['duration'] = (int)$duration;
+                }
+            }
+
+            if ($request->has('year')) {
+                $year = $request->input('year');
+                if (is_numeric($year) && $year >= 1900 && $year <= 2030) {
+                    $updateData['year'] = (int)$year;
+                }
+            }
+
+            if ($request->has('is_featured')) {
+                // Handle boolean more carefully
+                $isFeatured = $request->input('is_featured');
+                if ($isFeatured === true || $isFeatured === 'true' || $isFeatured === 1 || $isFeatured === '1') {
+                    $updateData['is_featured'] = true;
+                } else {
+                    $updateData['is_featured'] = false;
+                }
+            }
+
+            Log::info('Prepared update data:', $updateData);
+
+            // Handle file uploads with error handling
+            if ($request->hasFile('thumbnail')) {
+                Log::info('Processing thumbnail upload...');
+                try {
+                    // Delete old thumbnail
+                    if ($video->thumbnail_url) {
+                        $oldPath = parse_url($video->thumbnail_url, PHP_URL_PATH);
+                        $oldPath = ltrim($oldPath, '/');
+                        Storage::disk('b2')->delete($oldPath);
+                        Log::info('Old thumbnail deleted');
+                    }
+
+                    // Upload new thumbnail
+                    $thumbnailPath = $request->file('thumbnail')->store('thumbnails', 'b2');
+                    $updateData['thumbnail_url'] = Storage::disk('b2')->url($thumbnailPath);
+                    Log::info('New thumbnail uploaded:', ['url' => $updateData['thumbnail_url']]);
+                } catch (\Exception $e) {
+                    Log::error('Thumbnail upload failed:', ['error' => $e->getMessage()]);
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Gagal upload thumbnail: ' . $e->getMessage()
+                    ], 500);
+                }
+            }
+
+            if ($request->hasFile('video')) {
+                Log::info('Processing video upload...');
+                try {
+                    // Delete old video
+                    if ($video->video_url) {
+                        $oldPath = parse_url($video->video_url, PHP_URL_PATH);
+                        $oldPath = ltrim($oldPath, '/');
+                        Storage::disk('b2')->delete($oldPath);
+                        Log::info('Old video deleted');
+                    }
+
+                    // Upload new video
+                    $videoPath = $request->file('video')->store('videos', 'b2');
+                    $updateData['video_url'] = Storage::disk('b2')->url($videoPath);
+                    Log::info('New video uploaded:', ['url' => $updateData['video_url']]);
+                } catch (\Exception $e) {
+                    Log::error('Video upload failed:', ['error' => $e->getMessage()]);
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Gagal upload video: ' . $e->getMessage()
+                    ], 500);
+                }
+            }
+
+            // Update database if there's data to update
+            if (!empty($updateData)) {
+                Log::info('Performing database update:', $updateData);
+                try {
+                    $updateResult = $video->update($updateData);
+                    Log::info('Database update result:', ['success' => $updateResult]);
+
+                    if ($updateResult) {
+                        $video->refresh();
+                        Log::info('Video refreshed successfully');
+                    }
+                } catch (\Exception $e) {
+                    Log::error('Database update failed:', [
+                        'error' => $e->getMessage(),
+                        'data' => $updateData
+                    ]);
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Gagal update database: ' . $e->getMessage()
+                    ], 500);
+                }
+            }
+
+            Log::info('=== UPDATE COMPLETED SUCCESSFULLY ===');
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Video berhasil diupdate',
+                'data' => $video->fresh(), // Use fresh() to get latest data
+                'updated_fields' => array_keys($updateData)
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('=== UNEXPECTED UPDATE ERROR ===', [
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString(),
+                'request_data' => $request->all(),
+                'video_id' => $id ?? 'unknown'
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Server error: ' . $e->getMessage(),
+                'error_details' => [
+                    'file' => basename($e->getFile()),
+                    'line' => $e->getLine()
+                ]
+            ], 500);
+        }
+    }
+
+    public function destroy(Request $request, $id)
+    {
+        try {
+            // Manual admin check
+            if (!$request->user() || $request->user()->role !== 'admin') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized. Admin access required.'
+                ], 403);
+            }
+
+            $video = Video::findOrFail($id);
+
+            // Hapus files dari B2
             if ($video->video_url) {
                 $videoPath = parse_url($video->video_url, PHP_URL_PATH);
                 $videoPath = ltrim($videoPath, '/');
                 Storage::disk('b2')->delete($videoPath);
-                Log::info("Old video deleted from B2: {$videoPath}");
+                Log::info("Video file deleted: {$videoPath}");
             }
 
-            // Upload video baru
-            $videoPath = $request->file('video')->store('videos', 'b2');
-            $validated['video_url'] = Storage::disk('b2')->url($videoPath);
+            if ($video->thumbnail_url) {
+                $thumbnailPath = parse_url($video->thumbnail_url, PHP_URL_PATH);
+                $thumbnailPath = ltrim($thumbnailPath, '/');
+                Storage::disk('b2')->delete($thumbnailPath);
+                Log::info("Thumbnail file deleted: {$thumbnailPath}");
+            }
+
+            // Hapus dari database
+            $video->delete();
+            Log::info("Video deleted from database: {$id}");
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Video berhasil dihapus'
+            ]);
+
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Video tidak ditemukan'
+            ], 404);
+
+        } catch (\Exception $e) {
+            Log::error('Delete error:', ['error' => $e->getMessage()]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal hapus video: ' . $e->getMessage()
+            ], 500);
         }
-
-        // Update data video di database
-        $video->update($validated);
-
-        Log::info('Updated video data:', ['id' => $video->id]);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Video berhasil diupdate',
-            'data' => $video
-        ]);
-    } catch (\Exception $e) {
-        Log::error('Video update error:', [
-            'error' => $e->getMessage(),
-            'trace' => $e->getTraceAsString()
-        ]);
-        return response()->json([
-            'success' => false,
-            'message' => 'Gagal update video: ' . $e->getMessage()
-        ], 500);
     }
-}
-
-
-
-    public function destroy($id)
-{
-    try {
-        // Cari video berdasarkan ID
-        $video = Video::findOrFail($id);
-
-        // Hapus file video dari B2
-        if ($video->video_url) {
-            // Dapatkan path file video dari URL
-            $videoPath = parse_url($video->video_url, PHP_URL_PATH);
-            $videoPath = ltrim($videoPath, '/');  // Hapus '/' di depan
-
-            // Hapus video dari B2
-            Storage::disk('b2')->delete($videoPath);
-            Log::info("Video deleted from B2: {$videoPath}");
-        }
-
-        // Hapus file thumbnail dari B2
-        if ($video->thumbnail_url) {
-            // Dapatkan path file thumbnail dari URL
-            $thumbnailPath = parse_url($video->thumbnail_url, PHP_URL_PATH);
-            $thumbnailPath = ltrim($thumbnailPath, '/');  // Hapus '/' di depan
-
-            // Hapus thumbnail dari B2
-            Storage::disk('b2')->delete($thumbnailPath);
-            Log::info("Thumbnail deleted from B2: {$thumbnailPath}");
-        }
-
-        // Hapus video dari database
-        $video->delete();
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Video berhasil dihapus'
-        ]);
-    } catch (\Exception $e) {
-        return response()->json([
-            'success' => false,
-            'message' => 'Gagal hapus video: ' . $e->getMessage()
-        ], 500);
-    }
-}
-
 }
