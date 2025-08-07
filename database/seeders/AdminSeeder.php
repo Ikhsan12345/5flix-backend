@@ -13,13 +13,18 @@ class AdminSeeder extends Seeder
      */
     public function run(): void
     {
-        User::updateOrCreate(
-            ['username' => 'admin'],
-            [
-                'username' => 'admin',
-                'password' => Hash::make('admin5flix'),
-                'role' => 'admin'
-            ]
-        );
+        // Delete existing admin if exists
+        User::where('username', 'admin')->delete();
+
+        // Create new admin user
+        User::create([
+            'username' => 'admin',
+            'password' => Hash::make('admin5flix'),
+            'role' => 'admin'
+        ]);
+
+        echo "Admin user created successfully!\n";
+        echo "Username: admin\n";
+        echo "Password: admin5flix\n";
     }
 }

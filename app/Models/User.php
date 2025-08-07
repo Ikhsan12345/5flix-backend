@@ -12,10 +12,10 @@ class User extends Authenticatable
     use HasApiTokens, HasFactory, Notifiable;
 
     protected $fillable = [
-        'username', 'password', 'role'
+        'username',
+        'password',
+        'role'
     ];
-
-
 
     protected $hidden = [
         'password',
@@ -29,7 +29,14 @@ class User extends Authenticatable
         ];
     }
 
+    // Override the username field for authentication
     public function username()
+    {
+        return 'username';
+    }
+
+    // Add this method to ensure proper authentication
+    public function getAuthIdentifierName()
     {
         return 'username';
     }
