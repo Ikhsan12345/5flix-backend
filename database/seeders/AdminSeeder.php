@@ -10,28 +10,18 @@ class AdminSeeder extends Seeder
 {
     public function run(): void
     {
-        $username = env('ADMIN_USERNAME', 'admin');
-        $password = env('ADMIN_PASSWORD', 'admin5flix');
+        $username = env('ADMIN_USERNAME');
+        $password = env('ADMIN_PASSWORD');
 
-        // Pastikan username tidak null atau empty
-        if (empty($username)) {
-            $username = 'admin';
-        }
-
-        if (empty($password)) {
-            $password = 'admin5flix';
-        }
-
-        // Hapus admin lama jika ada
+        // Hapus admin lama
         User::where('username', $username)->delete();
 
         // Buat admin baru
         User::create([
             'username' => $username,
             'password' => Hash::make($password),
-            'role' => 'admin'
+            'role'     => 'admin'
         ]);
 
-        $this->command->info("Admin user created: {$username}");
     }
 }
