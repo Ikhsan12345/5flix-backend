@@ -3,10 +3,8 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
-use Laravel\Sanctum\PersonalAccessToken;
 
 class AuthController extends Controller
 {
@@ -21,12 +19,10 @@ class AuthController extends Controller
             $user = User::where('username', $request->username)->first();
 
             if ($user && Hash::check($request->password, $user->password)) {
-                // Delete existing tokens for this user
+                // Delete existing tokens
                 $user->tokens()->delete();
 
-                // Buat token manual tanpa menggunakan createToken
-                $tokenResult = $user->createToken(''); // Empty name
-                $token = $tokenResult->plainTextToken;
+                $token = $user->createToken('')->plainTextToken;
 
                 return response()->json([
                     'success' => true,
@@ -46,11 +42,9 @@ class AuthController extends Controller
             ], 401);
 
         } catch (\Exception $e) {
-            \Log::error('Login error: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
-                'message' => 'Server error',
-                'error' => $e->getMessage()
+                'message' => 'Server error'
             ], 500);
         }
     }
@@ -83,11 +77,9 @@ class AuthController extends Controller
             ], 201);
 
         } catch (\Exception $e) {
-            \Log::error('Register error: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
-                'message' => 'Server error',
-                'error' => $e->getMessage()
+                'message' => 'Server error'
             ], 500);
         }
     }
@@ -105,8 +97,7 @@ class AuthController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Server error',
-                'error' => $e->getMessage()
+                'message' => 'Server error'
             ], 500);
         }
     }

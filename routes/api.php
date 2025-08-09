@@ -5,35 +5,57 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\VideoController;
 use App\Http\Controllers\AuthController;
 
-// User info - perlu login
-Route::get('/user', function (Request $request) {
-    return $request->user();
-})->middleware('auth:sanctum');
+// User info
+Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
+    return response()->json([
+        'success' => true,
+        'data' => [
+            'id' => $request->user()->id,
+            'username' => $request->user()->username,
+            'role' => $request->user()->role
+        ]
+    ]);
+});
 
-// Auth routes - tidak perlu login
-Route::post('/login', [AuthController::class, 'login'])->name('login');
-Route::post('/register', [AuthController::class, 'register']);
+// Auth routes with strict rate limiting
+Route::middleware('throttle:5,1')->group(function () {
+    Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/register', [AuthController::class, 'register']);
+});
+
 Route::middleware('auth:sanctum')->post('/logout', [AuthController::class, 'logout']);
 
-// Video routes
-// Public routes (no authentication needed)
-Route::get('videos', [VideoController::class, 'index']);
-Route::get('videos/{id}', [VideoController::class, 'show']);
+// Public video routes with generous rate limiting
+Route::middleware('throttle:100,1')->group(function () {
+    Route::get('videos', [VideoController::class, 'index']);
+    Route::get('videos/{id}', [VideoController::class, 'show']);
+});
 
-// Protected routes (authentication + admin check handled in controller)
-Route::middleware('auth:sanctum')->group(function () {
+// Protected routes with authentication and moderate rate limiting
+Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
+
+    // Admin-only CRUD operations
     Route::post('videos', [VideoController::class, 'store']);
-
-    // Original PUT/PATCH routes
-    Route::put('videos/{id}', [VideoController::class, 'update']);
-    Route::patch('videos/{id}', [VideoController::class, 'update']);
-
-    // SOLUSI ALTERNATIF: POST route untuk form-data updates
-    // Gunakan ini jika PUT dengan form-data tidak berfungsi
     Route::post('videos/{id}/update', [VideoController::class, 'update']);
-
     Route::delete('videos/{id}', [VideoController::class, 'destroy']);
 
-    // Debug route - hapus setelah selesai debugging
-    Route::any('videos/{id}/debug', [VideoController::class, 'debugUpdate']);
+    // Download endpoint with special rate limiting
+    Route::get('videos/{id}/download', [VideoController::class, 'download'])
+        ->middleware('throttle:10,1');
+
+    // Featured videos endpoint
+    Route::get('videos-featured', function () {
+        try {
+            $videos = \App\Services\CacheService::getFeaturedVideos();
+            return response()->json([
+                'success' => true,
+                'data' => $videos
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Server error'
+            ], 500);
+        }
+    });
 });
