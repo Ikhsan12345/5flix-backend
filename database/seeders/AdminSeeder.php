@@ -8,23 +8,20 @@ use App\Models\User;
 
 class AdminSeeder extends Seeder
 {
-    /**
-     * Run the database seeds.
-     */
     public function run(): void
     {
-        // Delete existing admin if exists
-        User::where('username', 'admin')->delete();
+        $username = env('ADMIN_USERNAME');
+        $password = env('ADMIN_PASSWORD');
 
-        // Create new admin user
+        // Hapus admin lama
+        User::where('username', $username)->delete();
+
+        // Buat admin baru
         User::create([
-            'username' => 'admin',
-            'password' => Hash::make('admin5flix'),
-            'role' => 'admin'
+            'username' => $username,
+            'password' => Hash::make($password),
+            'role'     => 'admin'
         ]);
 
-        echo "Admin user created successfully!\n";
-        echo "Username: admin\n";
-        echo "Password: admin5flix\n";
     }
 }
