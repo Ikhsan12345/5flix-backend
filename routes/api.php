@@ -23,8 +23,15 @@ Route::get('videos/{id}', [VideoController::class, 'show']);
 // Protected routes (authentication + admin check handled in controller)
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('videos', [VideoController::class, 'store']);
+
+    // Original PUT/PATCH routes
     Route::put('videos/{id}', [VideoController::class, 'update']);
     Route::patch('videos/{id}', [VideoController::class, 'update']);
+
+    // SOLUSI ALTERNATIF: POST route untuk form-data updates
+    // Gunakan ini jika PUT dengan form-data tidak berfungsi
+    Route::post('videos/{id}/update', [VideoController::class, 'update']);
+
     Route::delete('videos/{id}', [VideoController::class, 'destroy']);
 
     // Debug route - hapus setelah selesai debugging
