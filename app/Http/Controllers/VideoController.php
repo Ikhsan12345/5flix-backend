@@ -13,9 +13,9 @@ class VideoController extends Controller
     {
         try {
             $videos = Cache::remember('videos.all', 300, function () {
-                return Video::select(['id', 'title', 'genre', 'thumbnail_url', 'duration', 'year', 'is_featured'])
-                           ->orderBy('created_at', 'desc')
-                           ->get();
+                return Video::select(['id', 'title', 'genre', 'thumbnail_url', 'video_url', 'duration', 'year', 'is_featured'])
+                    ->orderBy('created_at', 'desc')
+                    ->get();
             });
 
             return response()->json([
@@ -92,8 +92,8 @@ class VideoController extends Controller
                 'title' => $request->title,
                 'genre' => $request->genre,
                 'description' => $request->description,
-                'duration' => (int)$request->duration,
-                'year' => (int)$request->year,
+                'duration' => (int) $request->duration,
+                'year' => (int) $request->year,
                 'is_featured' => $request->is_featured == '1',
                 'thumbnail_url' => $thumbnailUrl,
                 'video_url' => $videoUrl,
@@ -124,7 +124,8 @@ class VideoController extends Controller
 
     private function deleteFileFromB2($fileUrl)
     {
-        if (!$fileUrl) return false;
+        if (!$fileUrl)
+            return false;
 
         try {
             $parsedUrl = parse_url($fileUrl);
@@ -203,13 +204,13 @@ class VideoController extends Controller
                         case 'duration':
                             if (is_numeric($value) && $value > 0) {
                                 $rules['duration'] = 'required|integer|min:1';
-                                $updateData['duration'] = (int)$value;
+                                $updateData['duration'] = (int) $value;
                             }
                             break;
                         case 'year':
                             if (is_numeric($value) && $value >= 1900 && $value <= 2030) {
                                 $rules['year'] = 'required|integer|min:1900|max:2030';
-                                $updateData['year'] = (int)$value;
+                                $updateData['year'] = (int) $value;
                             }
                             break;
                         case 'is_featured':
