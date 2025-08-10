@@ -21,10 +21,17 @@ class RouteServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        parent::boot();
-
         $this->configureRateLimiting();
-        $this->configureRoutes();
+        
+        $this->routes(function () {
+            Route::middleware('api')
+                ->prefix('api')
+                ->name('api.') // This will prefix all route names with 'api.'
+                ->group(base_path('routes/api.php'));
+
+            Route::middleware('web')
+                ->group(base_path('routes/web.php'));
+        });
     }
 
     protected function configureRateLimiting(): void
@@ -68,19 +75,6 @@ class RouteServiceProvider extends ServiceProvider
                 Limit::perMinute(200)->by($request->ip()), // High limit for streaming
                 Limit::perHour(1000)->by($request->ip())   // Daily streaming limit
             ];
-        });
-    }
-
-    protected function configureRoutes(): void
-    {
-        $this->routes(function () {
-            Route::middleware('api')
-                ->prefix('api')
-                ->name('api.') // This will prefix all route names with 'api.'
-                ->group(base_path('routes/api.php'));
-
-            Route::middleware('web')
-                ->group(base_path('routes/web.php'));
         });
     }
 }
