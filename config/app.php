@@ -25,6 +25,15 @@ return [
     | services the application utilizes. Set this in your ".env" file.
     |
     */
+    'providers' => [
+    // Framework Service Providers
+    Illuminate\Foundation\Providers\ArtisanServiceProvider::class,
+    // ... other providers
+
+    // Application Service Providers
+    App\Providers\AppServiceProvider::class,
+    App\Providers\RouteServiceProvider::class, // This should be present
+],
 
     'env' => env('APP_ENV', 'production'),
 
