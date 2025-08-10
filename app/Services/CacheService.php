@@ -53,25 +53,3 @@ class CacheService
         });
     }
 }
-
-// config/cache.php - Tambahkan konfigurasi ini jika belum ada
-// Gunakan Redis untuk production yang lebih baik
-
-/*
-'default' => env('CACHE_STORE', 'redis'),
-
-'stores' => [
-    'redis' => [
-        'driver' => 'redis',
-        'connection' => env('REDIS_CACHE_CONNECTION', 'cache'),
-        'lock_connection' => env('REDIS_CACHE_LOCK_CONNECTION', 'default'),
-    ],
-
-    // Fallback ke database jika Redis tidak tersedia
-    'database' => [
-        'driver' => 'database',
-        'table' => env('DB_CACHE_TABLE', 'cache'),
-        'connection' => env('DB_CACHE_CONNECTION'),
-    ],
-]
-*/

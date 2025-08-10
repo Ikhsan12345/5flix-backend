@@ -15,7 +15,6 @@ class AdminMiddleware
      */
     public function handle(Request $request, Closure $next): Response
     {
-        // Pastikan user sudah login dan adalah admin
         if (!$request->user() || $request->user()->role !== 'admin') {
             return response()->json([
                 'success' => false,
