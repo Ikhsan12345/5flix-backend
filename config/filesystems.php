@@ -65,7 +65,8 @@ return [
             'secret' => env('B2_APPLICATION_KEY'),
             'region' => 'us-east-005', // ganti sesuai region kamu
             'bucket' => env('B2_BUCKET'),
-            'url' => env('B2_ENDPOINT'),
+            'endpoint' => env('B2_ENDPOINT'), // ex: https://s3.us-east-005.backblazeb2.com
+            'url' => env('B2_FRIENDLY_URL'), // ex: https://f005.backblazeb2.com/file/5-flix
             'use_path_style_endpoint' => true, // penting untuk B2!
             'throw' => false,
             'report' => false,

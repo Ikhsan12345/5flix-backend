@@ -3,6 +3,7 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\VideoController;
+use App\Http\Controllers\VideoStreamController;
 use App\Http\Controllers\AuthController;
 
 // User info
@@ -18,7 +19,7 @@ Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
 });
 
 // Auth routes with strict rate limiting
-Route::middleware('throttle:5,1')->group(function () {
+Route::middleware('throttle:auth')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/register', [AuthController::class, 'register']);
 });
@@ -26,22 +27,32 @@ Route::middleware('throttle:5,1')->group(function () {
 Route::middleware('auth:sanctum')->post('/logout', [AuthController::class, 'logout']);
 
 // Public video routes with generous rate limiting
-Route::middleware('throttle:100,1')->group(function () {
+Route::middleware('throttle:public')->group(function () {
     Route::get('videos', [VideoController::class, 'index']);
     Route::get('videos/{id}', [VideoController::class, 'show']);
+
+    // Public streaming endpoints - accessible to all users with streaming rate limit
+    Route::middleware('throttle:streaming')->group(function () {
+        Route::get('videos/{id}/info', [VideoStreamController::class, 'getVideoInfo'])
+            ->name('video.info');
+        Route::get('videos/{id}/stream', [VideoStreamController::class, 'streamVideo'])
+            ->name('video.stream');
+        Route::get('videos/{id}/thumbnail', [VideoStreamController::class, 'getThumbnail'])
+            ->name('video.thumbnail');
+    });
 });
 
-// Protected routes with authentication and moderate rate limiting
-Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
+// Protected routes with authentication and admin rate limiting
+Route::middleware(['auth:sanctum', 'throttle:admin'])->group(function () {
 
     // Admin-only CRUD operations
     Route::post('videos', [VideoController::class, 'store']);
     Route::post('videos/{id}/update', [VideoController::class, 'update']);
     Route::delete('videos/{id}', [VideoController::class, 'destroy']);
 
-    // Download endpoint with special rate limiting
+    // Download endpoint with special download rate limiting
     Route::get('videos/{id}/download', [VideoController::class, 'download'])
-        ->middleware('throttle:10,1');
+        ->middleware('throttle:download');
 
     // Featured videos endpoint
     Route::get('videos-featured', function () {

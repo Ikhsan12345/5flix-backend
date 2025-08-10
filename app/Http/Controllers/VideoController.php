@@ -6,16 +6,36 @@ use App\Models\Video;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Cache;
+use App\Services\CacheService;
 
 class VideoController extends Controller
 {
     public function index()
     {
         try {
-            $videos = Cache::remember('videos.all', 300, function () {
-                return Video::select(['id', 'title', 'genre', 'thumbnail_url', 'video_url', 'duration', 'year', 'is_featured'])
-                    ->orderBy('created_at', 'desc')
-                    ->get();
+            // Use CacheService for better cache management
+            $videos = CacheService::getVideos();
+
+            // Add streaming URLs to each video
+            $videos = $videos->map(function ($video) {
+                $durationMinutes = round($video->duration / 60, 1);
+
+                return [
+                    'id' => $video->id,
+                    'title' => $video->title,
+                    'genre' => $video->genre,
+                    'duration' => $video->duration,
+                    'duration_minutes' => $durationMinutes,
+                    'duration_formatted' => $this->formatDuration($video->duration),
+                    'year' => $video->year,
+                    'is_featured' => $video->is_featured,
+                    // Add streaming URLs for easier frontend integration
+                    'stream_url' => route('api.video.stream', $video->id),
+                    'thumbnail_url' => route('api.video.thumbnail', $video->id),
+                    // Keep original URLs for admin purposes
+                    'original_video_url' => $video->video_url,
+                    'original_thumbnail_url' => $video->thumbnail_url
+                ];
             });
 
             return response()->json([
@@ -33,13 +53,32 @@ class VideoController extends Controller
     public function show($id)
     {
         try {
-            $video = Cache::remember("video.{$id}", 300, function () use ($id) {
-                return Video::findOrFail($id);
-            });
+            $video = CacheService::getVideo($id);
+            $durationMinutes = round($video->duration / 60, 1);
+
+            $videoData = [
+                'id' => $video->id,
+                'title' => $video->title,
+                'genre' => $video->genre,
+                'description' => $video->description,
+                'duration' => $video->duration,
+                'duration_minutes' => $durationMinutes,
+                'duration_formatted' => $this->formatDuration($video->duration),
+                'year' => $video->year,
+                'is_featured' => $video->is_featured,
+                'created_at' => $video->created_at,
+                'updated_at' => $video->updated_at,
+                // Add streaming URLs
+                'stream_url' => route('api.video.stream', $video->id),
+                'thumbnail_url' => route('api.video.thumbnail', $video->id),
+                // Keep original URLs for admin purposes
+                'original_video_url' => $video->video_url,
+                'original_thumbnail_url' => $video->thumbnail_url
+            ];
 
             return response()->json([
                 'success' => true,
-                'data' => $video
+                'data' => $videoData
             ]);
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json([
@@ -99,13 +138,32 @@ class VideoController extends Controller
                 'video_url' => $videoUrl,
             ]);
 
-            // Clear cache
-            Cache::forget('videos.all');
+            // Clear all related caches using CacheService
+            CacheService::clearVideoCache($video->id);
+
+            // Return video with streaming URLs
+            $videoData = [
+                'id' => $video->id,
+                'title' => $video->title,
+                'genre' => $video->genre,
+                'description' => $video->description,
+                'duration' => $video->duration,
+                'duration_minutes' => round($video->duration / 60, 1),
+                'duration_formatted' => $this->formatDuration($video->duration),
+                'year' => $video->year,
+                'is_featured' => $video->is_featured,
+                'stream_url' => route('api.video.stream', $video->id),
+                'thumbnail_url' => route('api.video.thumbnail', $video->id),
+                'original_video_url' => $video->video_url,
+                'original_thumbnail_url' => $video->thumbnail_url,
+                'created_at' => $video->created_at,
+                'updated_at' => $video->updated_at
+            ];
 
             return response()->json([
                 'success' => true,
                 'message' => 'Video berhasil diupload',
-                'data' => $video
+                'data' => $videoData
             ], 201);
 
         } catch (\Illuminate\Validation\ValidationException $e) {
@@ -130,16 +188,7 @@ class VideoController extends Controller
         try {
             $parsedUrl = parse_url($fileUrl);
 
-            // Handle Backblaze friendly URL
-            if (isset($parsedUrl['host']) && strpos($parsedUrl['host'], 'backblazeb2.com') !== false) {
-                $pathParts = explode('/', $parsedUrl['path']);
-                if (count($pathParts) >= 4 && $pathParts[1] === 'file') {
-                    $filePath = implode('/', array_slice($pathParts, 3));
-                    return Storage::disk('b2')->delete($filePath);
-                }
-            }
-
-            // Handle S3-compatible endpoint
+            // Handle S3-compatible endpoint only
             if (isset($parsedUrl['path'])) {
                 $filePath = ltrim($parsedUrl['path'], '/');
                 $bucketName = env('B2_BUCKET');
@@ -257,14 +306,33 @@ class VideoController extends Controller
 
             $video->update($updateData);
 
-            // Clear cache
-            Cache::forget('videos.all');
-            Cache::forget("video.{$id}");
+            // Clear all related caches
+            CacheService::clearVideoCache($video->id);
+
+            // Get fresh data with streaming URLs
+            $freshVideo = $video->fresh();
+            $videoData = [
+                'id' => $freshVideo->id,
+                'title' => $freshVideo->title,
+                'genre' => $freshVideo->genre,
+                'description' => $freshVideo->description,
+                'duration' => $freshVideo->duration,
+                'duration_minutes' => round($freshVideo->duration / 60, 1),
+                'duration_formatted' => $this->formatDuration($freshVideo->duration),
+                'year' => $freshVideo->year,
+                'is_featured' => $freshVideo->is_featured,
+                'stream_url' => route('api.video.stream', $freshVideo->id),
+                'thumbnail_url' => route('api.video.thumbnail', $freshVideo->id),
+                'original_video_url' => $freshVideo->video_url,
+                'original_thumbnail_url' => $freshVideo->thumbnail_url,
+                'created_at' => $freshVideo->created_at,
+                'updated_at' => $freshVideo->updated_at
+            ];
 
             return response()->json([
                 'success' => true,
                 'message' => 'Video berhasil diupdate',
-                'data' => $video->fresh()
+                'data' => $videoData
             ]);
 
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
@@ -303,8 +371,7 @@ class VideoController extends Controller
             $video->delete();
 
             // Clear cache
-            Cache::forget('videos.all');
-            Cache::forget("video.{$id}");
+            CacheService::clearVideoCache($video->id);
 
             return response()->json([
                 'success' => true,
@@ -344,7 +411,7 @@ class VideoController extends Controller
                     'video_id' => $video->id,
                     'title' => $video->title,
                     'download_url' => $video->video_url,
-                    'thumbnail_url' => $video->thumbnail_url,
+                    'thumbnail_url' => route('api.video.thumbnail', $video->id),
                     'duration' => $video->duration,
                     'genre' => $video->genre,
                     'year' => $video->year
@@ -361,6 +428,22 @@ class VideoController extends Controller
                 'success' => false,
                 'message' => 'Server error'
             ], 500);
+        }
+    }
+
+    /**
+     * Format duration to human readable format
+     */
+    private function formatDuration($seconds)
+    {
+        $hours = floor($seconds / 3600);
+        $minutes = floor(($seconds % 3600) / 60);
+        $remainingSeconds = $seconds % 60;
+
+        if ($hours > 0) {
+            return sprintf('%d:%02d:%02d', $hours, $minutes, $remainingSeconds);
+        } else {
+            return sprintf('%02d:%02d', $minutes, $remainingSeconds);
         }
     }
 }

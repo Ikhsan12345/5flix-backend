@@ -1,22 +1,30 @@
 <?php
 
-// app/Providers/RouteServiceProvider.php
-// Tambahkan custom rate limiting
-
 namespace App\Providers;
 
 use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Support\Facades\Route;
 
 class RouteServiceProvider extends ServiceProvider
 {
+    /**
+     * The path to your application's "home" route.
+     *
+     * Typically, users are redirected here after authentication.
+     *
+     * @var string
+     */
+    public const HOME = '/home';
+
     public function boot(): void
     {
         parent::boot();
 
         $this->configureRateLimiting();
+        $this->configureRoutes();
     }
 
     protected function configureRateLimiting(): void
@@ -34,7 +42,7 @@ class RouteServiceProvider extends ServiceProvider
             ];
         });
 
-        // Public API Rate Limiting
+        // Public API Rate Limiting (for streaming endpoints)
         RateLimiter::for('public', function (Request $request) {
             return Limit::perMinute(100)->by($request->ip());
         });
@@ -52,6 +60,27 @@ class RouteServiceProvider extends ServiceProvider
                 Limit::perMinute(10)->by($request->user()?->id ?: $request->ip()),
                 Limit::perHour(50)->by($request->user()?->id ?: $request->ip())
             ];
+        });
+
+        // Streaming Rate Limiting (for video/thumbnail streaming)
+        RateLimiter::for('streaming', function (Request $request) {
+            return [
+                Limit::perMinute(200)->by($request->ip()), // High limit for streaming
+                Limit::perHour(1000)->by($request->ip())   // Daily streaming limit
+            ];
+        });
+    }
+
+    protected function configureRoutes(): void
+    {
+        $this->routes(function () {
+            Route::middleware('api')
+                ->prefix('api')
+                ->name('api.') // This will prefix all route names with 'api.'
+                ->group(base_path('routes/api.php'));
+
+            Route::middleware('web')
+                ->group(base_path('routes/web.php'));
         });
     }
 }
