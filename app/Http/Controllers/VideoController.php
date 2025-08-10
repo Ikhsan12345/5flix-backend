@@ -5,36 +5,130 @@ namespace App\Http\Controllers;
 use App\Models\Video;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Facades\Cache;
 use App\Services\CacheService;
+use Illuminate\Support\Str;
 
 class VideoController extends Controller
 {
-    public function index()
+    /** ========== Helpers ========== */
+
+    // Ubah nilai kolom (key atau URL S3) menjadi "key" murni (videos/xxx.ext)
+    private function normalizeKey(?string $value): ?string
+    {
+        if (!$value) return null;
+        $value = trim($value);
+        if ($value === '') return null;
+
+        // Jika sudah relatif (disarankan)
+        if (!Str::startsWith($value, ['http://', 'https://'])) {
+            return ltrim($value, '/');
+        }
+
+        // Jika URL S3 (virtual-host / path-style), ambil path lalu buang "<bucket>/"
+        $p = parse_url($value);
+        if (!isset($p['path'])) return null;
+
+        $path   = ltrim($p['path'], '/');       // "5-flix/videos/xxx.mp4" atau "videos/xxx.mp4"
+        $bucket = env('B2_BUCKET');
+
+        if ($bucket && Str::startsWith($path, $bucket . '/')) {
+            return substr($path, strlen($bucket) + 1);
+        }
+        return $path; // virtual-host sudah "videos/xxx.mp4"
+    }
+
+    private function guessVideoMime(string $key): string
+    {
+        $ext = strtolower(pathinfo($key, PATHINFO_EXTENSION));
+        return match ($ext) {
+            'mp4'  => 'video/mp4',
+            'm4v'  => 'video/x-m4v',
+            'mkv'  => 'video/x-matroska',
+            'webm' => 'video/webm',
+            'avi'  => 'video/x-msvideo',
+            'mov'  => 'video/quicktime',
+            '3gp'  => 'video/3gpp',
+            'ts'   => 'video/mp2t',
+            'flv'  => 'video/x-flv',
+            default => 'application/octet-stream',
+        };
+    }
+
+    private function guessImageMime(string $key): string
+    {
+        $ext = strtolower(pathinfo($key, PATHINFO_EXTENSION));
+        return match ($ext) {
+            'jpg', 'jpeg' => 'image/jpeg',
+            'png'         => 'image/png',
+            'webp'        => 'image/webp',
+            default       => 'image/jpeg',
+        };
+    }
+
+    // Pre-signed URL dari key (SigV4) via disk 'b2'
+    private function presigned(string $key, int $ttl = 600, array $opts = []): string
+    {
+        $ttl = max(60, min($ttl, 3600)); // 1..60 menit
+        return Storage::disk('b2')->temporaryUrl($key, now()->addSeconds($ttl), $opts);
+    }
+
+    // Hapus objek: terima key atau URL
+    private function deleteFileFromB2(?string $keyOrUrl): bool
+    {
+        if (!$keyOrUrl) return false;
+        $key = $this->normalizeKey($keyOrUrl);
+        if (!$key) return false;
+        return Storage::disk('b2')->delete($key);
+    }
+
+    /** ========== READ ========== */
+
+    // Tambahkan Request agar bisa pakai query (?embed_signed=1 dll)
+    public function index(Request $request)
     {
         try {
-            // Use CacheService for better cache management
             $videos = CacheService::getVideos();
 
-            // Add streaming URLs to each video
-            $videos = $videos->map(function ($video) {
-                $durationMinutes = round($video->duration / 60, 1);
+            $embedSigned = $request->boolean('embed_signed', false);
+            $ttl         = (int) $request->query('ttl', 600);
+
+            $videos = $videos->map(function ($video) use ($embedSigned, $ttl) {
+                $durationMinutes = round(($video->duration ?? 0) / 60, 1);
+
+                // Normalisasi key dari DB (handle lama yang masih URL)
+                $videoKey = $this->normalizeKey($video->video_url ?? '');
+                $thumbKey = $this->normalizeKey($video->thumbnail_url ?? '');
+
+                // Siapkan pre-signed opsional (langsung siap pakai di FE)
+                $signedStream   = $embedSigned && $videoKey
+                    ? $this->presigned($videoKey, $ttl, ['ResponseContentType' => $this->guessVideoMime($videoKey)])
+                    : null;
+
+                $signedThumb    = $embedSigned && $thumbKey
+                    ? $this->presigned($thumbKey, $ttl, ['ResponseContentType' => $this->guessImageMime($thumbKey)])
+                    : null;
 
                 return [
-                    'id' => $video->id,
-                    'title' => $video->title,
-                    'genre' => $video->genre,
-                    'duration' => $video->duration,
-                    'duration_minutes' => $durationMinutes,
-                    'duration_formatted' => $this->formatDuration($video->duration),
-                    'year' => $video->year,
-                    'is_featured' => $video->is_featured,
-                    // Add streaming URLs for easier frontend integration
-                    'stream_url' => route('api.video.stream', $video->id),
-                    'thumbnail_url' => route('api.video.thumbnail', $video->id),
-                    // Keep original URLs for admin purposes
-                    'original_video_url' => $video->video_url,
-                    'original_thumbnail_url' => $video->thumbnail_url
+                    'id'                   => $video->id,
+                    'title'                => $video->title,
+                    'genre'                => $video->genre,
+                    'duration'             => $video->duration,
+                    'duration_minutes'     => $durationMinutes,
+                    'duration_formatted'   => $this->formatDuration($video->duration ?? 0),
+                    'year'                 => $video->year,
+                    'is_featured'          => (bool) $video->is_featured,
+
+                    // Rute streaming (redirect → pre-signed) untuk integrasi FE
+                    'stream_url'           => route('api.video.stream', $video->id),
+                    'thumbnail_url'        => route('api.video.thumbnail', $video->id),
+
+                    // Pre-signed langsung (opsional, aktifkan dengan ?embed_signed=1)
+                    'signed_stream_url'    => $signedStream,
+                    'signed_thumbnail_url' => $signedThumb,
+
+                    // Simpan nilai asli untuk admin (BERISI KEY sekarang)
+                    'original_video_url'      => $videoKey,
+                    'original_thumbnail_url'  => $thumbKey,
                 ];
             });
 
@@ -50,11 +144,25 @@ class VideoController extends Controller
         }
     }
 
-    public function show($id)
+    public function show(Request $request, $id)
     {
         try {
             $video = CacheService::getVideo($id);
-            $durationMinutes = round($video->duration / 60, 1);
+
+            $durationMinutes = round(($video->duration ?? 0) / 60, 1);
+            $embedSigned = $request->boolean('embed_signed', false);
+            $ttl         = (int) $request->query('ttl', 600);
+
+            $videoKey = $this->normalizeKey($video->video_url ?? '');
+            $thumbKey = $this->normalizeKey($video->thumbnail_url ?? '');
+
+            $signedStream = $embedSigned && $videoKey
+                ? $this->presigned($videoKey, $ttl, ['ResponseContentType' => $this->guessVideoMime($videoKey)])
+                : null;
+
+            $signedThumb  = $embedSigned && $thumbKey
+                ? $this->presigned($thumbKey, $ttl, ['ResponseContentType' => $this->guessImageMime($thumbKey)])
+                : null;
 
             $videoData = [
                 'id' => $video->id,
@@ -63,17 +171,23 @@ class VideoController extends Controller
                 'description' => $video->description,
                 'duration' => $video->duration,
                 'duration_minutes' => $durationMinutes,
-                'duration_formatted' => $this->formatDuration($video->duration),
+                'duration_formatted' => $this->formatDuration($video->duration ?? 0),
                 'year' => $video->year,
-                'is_featured' => $video->is_featured,
+                'is_featured' => (bool) $video->is_featured,
                 'created_at' => $video->created_at,
                 'updated_at' => $video->updated_at,
-                // Add streaming URLs
-                'stream_url' => route('api.video.stream', $video->id),
+
+                // Endpoint streaming (redirect → pre-signed)
+                'stream_url'    => route('api.video.stream', $video->id),
                 'thumbnail_url' => route('api.video.thumbnail', $video->id),
-                // Keep original URLs for admin purposes
-                'original_video_url' => $video->video_url,
-                'original_thumbnail_url' => $video->thumbnail_url
+
+                // Pre-signed opsional
+                'signed_stream_url'    => $signedStream,
+                'signed_thumbnail_url' => $signedThumb,
+
+                // Untuk admin/debug (key yang disimpan)
+                'original_video_url'     => $videoKey,
+                'original_thumbnail_url' => $thumbKey,
             ];
 
             return response()->json([
@@ -81,128 +195,86 @@ class VideoController extends Controller
                 'data' => $videoData
             ]);
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Video tidak ditemukan'
-            ], 404);
+            return response()->json(['success' => false, 'message' => 'Video tidak ditemukan'], 404);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Server error'
-            ], 500);
+            return response()->json(['success' => false, 'message' => 'Server error'], 500);
         }
     }
+
+    /** ========== WRITE ========== */
 
     public function store(Request $request)
     {
         try {
             if (!$request->user() || $request->user()->role !== 'admin') {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized'
-                ], 403);
+                return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
             }
 
             $validated = $request->validate([
-                'title' => 'required|string|max:255',
-                'genre' => 'required|string|max:100',
+                'title'       => 'required|string|max:255',
+                'genre'       => 'required|string|max:100',
                 'description' => 'nullable|string',
-                'duration' => 'required|integer|min:1',
-                'year' => 'required|integer|min:1900|max:2030',
+                'duration'    => 'required|integer|min:1',
+                'year'        => 'required|integer|min:1900|max:2030',
                 'is_featured' => 'nullable|in:0,1',
-                'thumbnail' => 'required|file|image|mimes:jpg,jpeg,png|max:2048',
-                'video' => 'required|file|mimes:mp4,mkv,avi|max:102400',
+                'thumbnail'   => 'required|file|image|mimes:jpg,jpeg,png,webp|max:4096',
+                // dukung banyak ekstensi video
+                'video'       => 'required|file|mimes:mp4,mkv,avi,webm,mov,m4v,3gp,ts,flv|max:204800',
             ]);
 
-            $thumbnailUrl = null;
-            $videoUrl = null;
+            $thumbKey = null;
+            $videoKey = null;
 
             if ($request->hasFile('thumbnail')) {
-                $thumbnailPath = $request->file('thumbnail')->store('thumbnails', 'b2');
-                $thumbnailUrl = Storage::disk('b2')->url($thumbnailPath);
+                // simpan sebagai key (private)
+                $thumbKey = $request->file('thumbnail')->store('thumbnails', 'b2'); // default private
             }
 
             if ($request->hasFile('video')) {
-                $videoPath = $request->file('video')->store('videos', 'b2');
-                $videoUrl = Storage::disk('b2')->url($videoPath);
+                $videoKey = $request->file('video')->store('videos', 'b2'); // default private
             }
 
             $video = Video::create([
-                'title' => $request->title,
-                'genre' => $request->genre,
-                'description' => $request->description,
-                'duration' => (int) $request->duration,
-                'year' => (int) $request->year,
-                'is_featured' => $request->is_featured == '1',
-                'thumbnail_url' => $thumbnailUrl,
-                'video_url' => $videoUrl,
+                'title'         => $request->title,
+                'genre'         => $request->genre,
+                'description'   => $request->description,
+                'duration'      => (int) $request->duration,
+                'year'          => (int) $request->year,
+                'is_featured'   => $request->is_featured == '1',
+                // simpan KEY, bukan URL
+                'thumbnail_url' => $thumbKey,
+                'video_url'     => $videoKey,
             ]);
 
-            // Clear all related caches using CacheService
             CacheService::clearVideoCache($video->id);
 
-            // Return video with streaming URLs
-            $videoData = [
-                'id' => $video->id,
-                'title' => $video->title,
-                'genre' => $video->genre,
-                'description' => $video->description,
-                'duration' => $video->duration,
-                'duration_minutes' => round($video->duration / 60, 1),
-                'duration_formatted' => $this->formatDuration($video->duration),
-                'year' => $video->year,
-                'is_featured' => $video->is_featured,
-                'stream_url' => route('api.video.stream', $video->id),
-                'thumbnail_url' => route('api.video.thumbnail', $video->id),
-                'original_video_url' => $video->video_url,
-                'original_thumbnail_url' => $video->thumbnail_url,
-                'created_at' => $video->created_at,
-                'updated_at' => $video->updated_at
-            ];
-
+            // response ringkas (FE bisa panggil /stream saat butuh)
             return response()->json([
                 'success' => true,
                 'message' => 'Video berhasil diupload',
-                'data' => $videoData
+                'data' => [
+                    'id' => $video->id,
+                    'title' => $video->title,
+                    'genre' => $video->genre,
+                    'description' => $video->description,
+                    'duration' => $video->duration,
+                    'duration_minutes' => round($video->duration / 60, 1),
+                    'duration_formatted' => $this->formatDuration($video->duration ?? 0),
+                    'year' => $video->year,
+                    'is_featured' => (bool) $video->is_featured,
+                    'stream_url' => route('api.video.stream', $video->id),
+                    'thumbnail_url' => route('api.video.thumbnail', $video->id),
+                    'original_video_url' => $videoKey,
+                    'original_thumbnail_url' => $thumbKey,
+                    'created_at' => $video->created_at,
+                    'updated_at' => $video->updated_at
+                ]
             ], 201);
 
         } catch (\Illuminate\Validation\ValidationException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation error',
-                'errors' => $e->errors()
-            ], 422);
+            return response()->json(['success' => false, 'message' => 'Validation error', 'errors' => $e->errors()], 422);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Server error'
-            ], 500);
-        }
-    }
-
-    private function deleteFileFromB2($fileUrl)
-    {
-        if (!$fileUrl)
-            return false;
-
-        try {
-            $parsedUrl = parse_url($fileUrl);
-
-            // Handle S3-compatible endpoint only
-            if (isset($parsedUrl['path'])) {
-                $filePath = ltrim($parsedUrl['path'], '/');
-                $bucketName = env('B2_BUCKET');
-
-                if ($bucketName && strpos($filePath, $bucketName . '/') === 0) {
-                    $filePath = substr($filePath, strlen($bucketName) + 1);
-                }
-
-                return Storage::disk('b2')->delete($filePath);
-            }
-
-            return false;
-        } catch (\Exception $e) {
-            return false;
+            return response()->json(['success' => false, 'message' => 'Server error'], 500);
         }
     }
 
@@ -215,142 +287,104 @@ class VideoController extends Controller
 
             $video = Video::findOrFail($id);
             $allInputs = $request->all();
-            $allFiles = $request->allFiles();
+            $allFiles  = $request->allFiles();
 
             if (empty($allInputs) && empty($allFiles)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Tidak ada data untuk diupdate'
-                ], 400);
+                return response()->json(['success' => false, 'message' => 'Tidak ada data untuk diupdate'], 400);
             }
 
             $rules = [];
-            $updateData = [];
-            $textFields = ['title', 'genre', 'description', 'duration', 'year', 'is_featured'];
+            $update = [];
+            $fields = ['title','genre','description','duration','year','is_featured'];
 
-            // Handle text fields
-            foreach ($textFields as $field) {
-                if (array_key_exists($field, $allInputs)) {
-                    $value = $allInputs[$field];
-
-                    switch ($field) {
+            foreach ($fields as $f) {
+                if (array_key_exists($f, $allInputs)) {
+                    $val = $allInputs[$f];
+                    switch ($f) {
                         case 'title':
-                            if ($value && trim($value) !== '') {
-                                $rules['title'] = 'required|string|max:255';
-                                $updateData['title'] = trim($value);
-                            }
+                            if ($val && trim($val) !== '') { $rules['title']='required|string|max:255'; $update['title']=trim($val); }
                             break;
                         case 'genre':
-                            if ($value && trim($value) !== '') {
-                                $rules['genre'] = 'required|string|max:100';
-                                $updateData['genre'] = trim($value);
-                            }
+                            if ($val && trim($val) !== '') { $rules['genre']='required|string|max:100'; $update['genre']=trim($val); }
                             break;
                         case 'description':
-                            $rules['description'] = 'nullable|string';
-                            $updateData['description'] = $value ? trim($value) : null;
+                            $rules['description']='nullable|string'; $update['description']=$val ? trim($val) : null;
                             break;
                         case 'duration':
-                            if (is_numeric($value) && $value > 0) {
-                                $rules['duration'] = 'required|integer|min:1';
-                                $updateData['duration'] = (int) $value;
-                            }
+                            if (is_numeric($val) && $val > 0) { $rules['duration']='required|integer|min:1'; $update['duration']=(int)$val; }
                             break;
                         case 'year':
-                            if (is_numeric($value) && $value >= 1900 && $value <= 2030) {
-                                $rules['year'] = 'required|integer|min:1900|max:2030';
-                                $updateData['year'] = (int) $value;
-                            }
+                            if (is_numeric($val) && $val >= 1900 && $val <= 2030) { $rules['year']='required|integer|min:1900|max:2030'; $update['year']=(int)$val; }
                             break;
                         case 'is_featured':
-                            $rules['is_featured'] = 'nullable|boolean';
-                            $updateData['is_featured'] = in_array($value, [true, 'true', 1, '1'], true);
+                            $rules['is_featured']='nullable|boolean'; $update['is_featured']=in_array($val, [true,'true',1,'1'], true);
                             break;
                     }
                 }
             }
 
-            // Handle file uploads
             if ($request->hasFile('thumbnail')) {
-                $rules['thumbnail'] = 'file|image|mimes:jpg,jpeg,png|max:2048';
+                $rules['thumbnail'] = 'file|image|mimes:jpg,jpeg,png,webp|max:4096';
             }
             if ($request->hasFile('video')) {
-                $rules['video'] = 'file|mimes:mp4,mkv,avi|max:102400';
+                $rules['video'] = 'file|mimes:mp4,mkv,avi,webm,mov,m4v,3gp,ts,flv|max:204800';
             }
 
-            // Validate
             if (!empty($rules)) {
                 $request->validate($rules);
             }
 
-            // Handle thumbnail replacement
             if ($request->hasFile('thumbnail')) {
                 $this->deleteFileFromB2($video->thumbnail_url);
-                $thumbnailPath = $request->file('thumbnail')->store('thumbnails', 'b2');
-                $updateData['thumbnail_url'] = Storage::disk('b2')->url($thumbnailPath);
+                $thumbKey = $request->file('thumbnail')->store('thumbnails', 'b2');
+                $update['thumbnail_url'] = $thumbKey; // simpan key
             }
 
-            // Handle video replacement
             if ($request->hasFile('video')) {
                 $this->deleteFileFromB2($video->video_url);
-                $videoPath = $request->file('video')->store('videos', 'b2');
-                $updateData['video_url'] = Storage::disk('b2')->url($videoPath);
+                $videoKey = $request->file('video')->store('videos', 'b2');
+                $update['video_url'] = $videoKey; // simpan key
             }
 
-            if (empty($updateData)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Data tidak valid'
-                ], 400);
+            if (empty($update)) {
+                return response()->json(['success' => false, 'message' => 'Data tidak valid'], 400);
             }
 
-            $video->update($updateData);
-
-            // Clear all related caches
+            $video->update($update);
             CacheService::clearVideoCache($video->id);
 
-            // Get fresh data with streaming URLs
-            $freshVideo = $video->fresh();
-            $videoData = [
-                'id' => $freshVideo->id,
-                'title' => $freshVideo->title,
-                'genre' => $freshVideo->genre,
-                'description' => $freshVideo->description,
-                'duration' => $freshVideo->duration,
-                'duration_minutes' => round($freshVideo->duration / 60, 1),
-                'duration_formatted' => $this->formatDuration($freshVideo->duration),
-                'year' => $freshVideo->year,
-                'is_featured' => $freshVideo->is_featured,
-                'stream_url' => route('api.video.stream', $freshVideo->id),
-                'thumbnail_url' => route('api.video.thumbnail', $freshVideo->id),
-                'original_video_url' => $freshVideo->video_url,
-                'original_thumbnail_url' => $freshVideo->thumbnail_url,
-                'created_at' => $freshVideo->created_at,
-                'updated_at' => $freshVideo->updated_at
-            ];
+            $fresh = $video->fresh();
+            $videoKey = $this->normalizeKey($fresh->video_url ?? '');
+            $thumbKey = $this->normalizeKey($fresh->thumbnail_url ?? '');
 
             return response()->json([
                 'success' => true,
                 'message' => 'Video berhasil diupdate',
-                'data' => $videoData
+                'data' => [
+                    'id' => $fresh->id,
+                    'title' => $fresh->title,
+                    'genre' => $fresh->genre,
+                    'description' => $fresh->description,
+                    'duration' => $fresh->duration,
+                    'duration_minutes' => round(($fresh->duration ?? 0) / 60, 1),
+                    'duration_formatted' => $this->formatDuration($fresh->duration ?? 0),
+                    'year' => $fresh->year,
+                    'is_featured' => (bool) $fresh->is_featured,
+                    'stream_url' => route('api.video.stream', $fresh->id),
+                    'thumbnail_url' => route('api.video.thumbnail', $fresh->id),
+                    'original_video_url' => $videoKey,
+                    'original_thumbnail_url' => $thumbKey,
+                    'created_at' => $fresh->created_at,
+                    'updated_at' => $fresh->updated_at
+                ]
             ]);
 
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Video tidak ditemukan'
-            ], 404);
+            return response()->json(['success' => false, 'message' => 'Video tidak ditemukan'], 404);
         } catch (\Illuminate\Validation\ValidationException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Data tidak valid',
-                'errors' => $e->errors()
-            ], 422);
+            return response()->json(['success' => false, 'message' => 'Data tidak valid', 'errors' => $e->errors()], 422);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Server error'
-            ], 500);
+            return response()->json(['success' => false, 'message' => 'Server error'], 500);
         }
     }
 
@@ -363,31 +397,19 @@ class VideoController extends Controller
 
             $video = Video::findOrFail($id);
 
-            // Delete files from B2
+            // Hapus objek di B2 (key atau URL lama)
             $this->deleteFileFromB2($video->video_url);
             $this->deleteFileFromB2($video->thumbnail_url);
 
-            // Delete from database
             $video->delete();
+            CacheService::clearVideoCache($id);
 
-            // Clear cache
-            CacheService::clearVideoCache($video->id);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Video berhasil dihapus'
-            ]);
+            return response()->json(['success' => true, 'message' => 'Video berhasil dihapus']);
 
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Video tidak ditemukan'
-            ], 404);
+            return response()->json(['success' => false, 'message' => 'Video tidak ditemukan'], 404);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Server error'
-            ], 500);
+            return response()->json(['success' => false, 'message' => 'Server error'], 500);
         }
     }
 
@@ -396,54 +418,50 @@ class VideoController extends Controller
         try {
             $video = Video::findOrFail($id);
 
-            // Validate user access if needed
             if (!$request->user()) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Authentication required'
-                ], 401);
+                return response()->json(['success' => false, 'message' => 'Authentication required'], 401);
             }
 
-            // Return video download URL
+            $videoKey = $this->normalizeKey($video->video_url ?? '');
+            if (!$videoKey) {
+                return response()->json(['success' => false, 'message' => 'Invalid video key'], 400);
+            }
+
+            $mime = $this->guessVideoMime($videoKey);
+            $fname = Str::slug($video->title ?? 'video') . '.' . strtolower(pathinfo($videoKey, PATHINFO_EXTENSION));
+
+            $url = $this->presigned($videoKey, 600, [
+                'ResponseContentType'        => $mime,
+                'ResponseContentDisposition' => 'attachment; filename="'.$fname.'"',
+            ]);
+
             return response()->json([
                 'success' => true,
                 'data' => [
-                    'video_id' => $video->id,
-                    'title' => $video->title,
-                    'download_url' => $video->video_url,
+                    'video_id'      => $video->id,
+                    'title'         => $video->title,
+                    'download_url'  => $url, // pre-signed (langsung unduh)
                     'thumbnail_url' => route('api.video.thumbnail', $video->id),
-                    'duration' => $video->duration,
-                    'genre' => $video->genre,
-                    'year' => $video->year
+                    'duration'      => $video->duration,
+                    'genre'         => $video->genre,
+                    'year'          => $video->year
                 ]
             ]);
 
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Video tidak ditemukan'
-            ], 404);
+            return response()->json(['success' => false, 'message' => 'Video tidak ditemukan'], 404);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Server error'
-            ], 500);
+            return response()->json(['success' => false, 'message' => 'Server error'], 500);
         }
     }
 
-    /**
-     * Format duration to human readable format
-     */
-    private function formatDuration($seconds)
-    {
-        $hours = floor($seconds / 3600);
-        $minutes = floor(($seconds % 3600) / 60);
-        $remainingSeconds = $seconds % 60;
+    /** ========== Utils ========== */
 
-        if ($hours > 0) {
-            return sprintf('%d:%02d:%02d', $hours, $minutes, $remainingSeconds);
-        } else {
-            return sprintf('%02d:%02d', $minutes, $remainingSeconds);
-        }
+    private function formatDuration(int $seconds): string
+    {
+        $h = intdiv($seconds, 3600);
+        $m = intdiv($seconds % 3600, 60);
+        $s = $seconds % 60;
+        return $h > 0 ? sprintf('%d:%02d:%02d', $h, $m, $s) : sprintf('%02d:%02d', $m, $s);
     }
 }

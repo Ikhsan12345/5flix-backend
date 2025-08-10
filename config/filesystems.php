@@ -30,49 +30,51 @@ return [
 
     'disks' => [
 
-        'local' => [
-            'driver' => 'local',
-            'root' => storage_path('app/private'),
-            'serve' => true,
-            'throw' => false,
-            'report' => false,
-        ],
-
-        'public' => [
-            'driver' => 'local',
-            'root' => storage_path('app/public'),
-            'url' => env('APP_URL').'/storage',
-            'visibility' => 'public',
-            'throw' => false,
-            'report' => false,
-        ],
-
-        's3' => [
-            'driver' => 's3',
-            'key' => env('AWS_ACCESS_KEY_ID'),
-            'secret' => env('AWS_SECRET_ACCESS_KEY'),
-            'region' => env('AWS_DEFAULT_REGION'),
-            'bucket' => env('AWS_BUCKET'),
-            'url' => env('AWS_URL'),
-            'endpoint' => env('AWS_ENDPOINT'),
-            'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
-            'throw' => false,
-            'report' => false,
-        ],
-        'b2' => [
-            'driver' => 's3',
-            'key'    => env('B2_KEY_ID'),
-            'secret' => env('B2_APPLICATION_KEY'),
-            'region' => 'us-east-005', // ganti sesuai region kamu
-            'bucket' => env('B2_BUCKET'),
-            'endpoint' => env('B2_ENDPOINT'), // ex: https://s3.us-east-005.backblazeb2.com
-            'url' => env('B2_FRIENDLY_URL'), // ex: https://f005.backblazeb2.com/file/5-flix
-            'use_path_style_endpoint' => true, // penting untuk B2!
-            'throw' => false,
-            'report' => false,
-        ],
-
+    'local' => [
+        'driver' => 'local',
+        'root' => storage_path('app/private'),
+        'serve' => true,
+        'throw' => false,
+        'report' => false,
     ],
+
+    'public' => [
+        'driver' => 'local',
+        'root' => storage_path('app/public'),
+        'url' => env('APP_URL').'/storage',
+        'visibility' => 'public',
+        'throw' => false,
+        'report' => false,
+    ],
+
+    's3' => [
+        'driver' => 's3',
+        'key' => env('AWS_ACCESS_KEY_ID'),
+        'secret' => env('AWS_SECRET_ACCESS_KEY'),
+        'region' => env('AWS_DEFAULT_REGION'),
+        'bucket' => env('AWS_BUCKET'),
+        'url' => env('AWS_URL'),
+        'endpoint' => env('AWS_ENDPOINT'),
+        'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
+        'throw' => false,
+        'report' => false,
+    ],
+
+    // === Backblaze B2 via S3-compatible (tanpa friendly URL) ===
+    'b2' => [
+        'driver' => 's3',
+        'key'    => env('B2_KEY_ID'),
+        'secret' => env('B2_APPLICATION_KEY'),
+        'region' => env('B2_REGION', 'us-east-005'),
+        'bucket' => env('B2_BUCKET'),
+        'endpoint' => env('B2_ENDPOINT', 'https://s3.us-east-005.backblazeb2.com'),
+        'use_path_style_endpoint' => env('B2_USE_PATH_STYLE', true),
+        'visibility' => 'private',  // default private
+        'throw' => true,
+        'report' => false,
+    ],
+],
+
 
     /*
     |--------------------------------------------------------------------------

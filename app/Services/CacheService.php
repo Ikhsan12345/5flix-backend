@@ -1,55 +1,83 @@
 <?php
 
-// app/Services/CacheService.php
 namespace App\Services;
 
+use App\Models\Video;
 use Illuminate\Support\Facades\Cache;
 
 class CacheService
 {
-    // Cache keys
-    const VIDEOS_ALL = 'videos.all';
-    const VIDEO_SINGLE = 'video.';
-    const FEATURED_VIDEOS = 'videos.featured';
+    // Lama cache untuk list (detik)
+    private const TTL_INDEX   = 120;
+    private const TTL_FEATURE = 300;
+    private const KEY_INDEX   = 'videos.raw';
+    private const KEY_FEATURE = 'videos.featured';
+    private const KEY_ITEM    = 'video.'; // + {id}
 
-    // Cache TTL (in seconds)
-    const SHORT_TTL = 300;  // 5 minutes
-    const MEDIUM_TTL = 1800; // 30 minutes
-    const LONG_TTL = 3600;   // 1 hour
-
-    public static function clearVideoCache($videoId = null)
-    {
-        Cache::forget(self::VIDEOS_ALL);
-        Cache::forget(self::FEATURED_VIDEOS);
-
-        if ($videoId) {
-            Cache::forget(self::VIDEO_SINGLE . $videoId);
-        }
-    }
-
+    /**
+     * Ambil list video mentah untuk index (tanpa pre-signed URL).
+     * Disarankan select kolom yang memang dibutuhkan.
+     */
     public static function getVideos()
     {
-        return Cache::remember(self::VIDEOS_ALL, self::SHORT_TTL, function () {
-            return \App\Models\Video::select([
-                'id', 'title', 'genre', 'thumbnail_url',
-                'duration', 'year', 'is_featured'
-            ])->orderBy('created_at', 'desc')->get();
+        return Cache::remember(self::KEY_INDEX, self::TTL_INDEX, function () {
+            return Video::query()
+                ->select([
+                    'id', 'title', 'genre', 'description',
+                    'duration', 'year', 'is_featured',
+                    'thumbnail_url', 'video_url',
+                    'created_at', 'updated_at',
+                ])
+                ->orderByDesc('created_at')
+                ->get();
         });
     }
 
-    public static function getVideo($id)
+    /**
+     * Ambil satu video (untuk show/detail).
+     */
+    public static function getVideo(int $id): Video
     {
-        return Cache::remember(self::VIDEO_SINGLE . $id, self::MEDIUM_TTL, function () use ($id) {
-            return \App\Models\Video::findOrFail($id);
+        return Cache::remember(self::KEY_ITEM.$id, self::TTL_INDEX, function () use ($id) {
+            return Video::findOrFail($id);
         });
     }
 
+    /**
+     * Ambil daftar featured.
+     */
     public static function getFeaturedVideos()
     {
-        return Cache::remember(self::FEATURED_VIDEOS, self::LONG_TTL, function () {
-            return \App\Models\Video::where('is_featured', true)
-                                  ->select(['id', 'title', 'genre', 'thumbnail_url', 'duration', 'year'])
-                                  ->get();
+        return Cache::remember(self::KEY_FEATURE, self::TTL_FEATURE, function () {
+            return Video::query()
+                ->where('is_featured', true)
+                ->select([
+                    'id', 'title', 'genre', 'description',
+                    'duration', 'year', 'is_featured',
+                    'thumbnail_url', 'video_url',
+                    'created_at', 'updated_at',
+                ])
+                ->orderByDesc('created_at')
+                ->get();
         });
+    }
+
+    /**
+     * Hapus cache yang berkaitan dengan sebuah video.
+     */
+    public static function clearVideoCache(int $id): void
+    {
+        Cache::forget(self::KEY_ITEM.$id);
+        Cache::forget(self::KEY_INDEX);
+        Cache::forget(self::KEY_FEATURE);
+    }
+
+    /**
+     * Opsi: hapus semua cache list (tanpa id spesifik).
+     */
+    public static function clearAll(): void
+    {
+        Cache::forget(self::KEY_INDEX);
+        Cache::forget(self::KEY_FEATURE);
     }
 }

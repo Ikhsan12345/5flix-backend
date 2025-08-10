@@ -33,13 +33,11 @@ Route::middleware('throttle:100,1')->group(function () {
 
     // Public streaming endpoints - accessible to all users with high limit
     Route::middleware('throttle:200,1')->group(function () {
-        Route::get('videos/{id}/info', [VideoStreamController::class, 'getVideoInfo'])
-            ->name('video.info');
-        Route::get('videos/{id}/stream', [VideoStreamController::class, 'streamVideo'])
-            ->name('video.stream');
-        Route::get('videos/{id}/thumbnail', [VideoStreamController::class, 'getThumbnail'])
-            ->name('video.thumbnail');
+        Route::get('videos/{id}/info', [VideoStreamController::class, 'getVideoInfo'])->name('api.video.info');
+        Route::get('videos/{id}/stream', [VideoStreamController::class, 'streamVideo'])->name('api.video.stream');
+        Route::get('videos/{id}/thumbnail', [VideoStreamController::class, 'getThumbnail'])->name('api.video.thumbnail');
     });
+
 });
 
 // Protected routes with authentication and admin rate limiting

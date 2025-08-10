@@ -5,295 +5,275 @@ namespace App\Http\Controllers;
 use App\Models\Video;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
+use Aws\S3\S3Client;
+use Aws\Exception\AwsException;
 
 class VideoStreamController extends Controller
 {
-    private function getS3Url($filePath, $type = 'video')
+    /**
+     * Inisialisasi S3Client (S3-compatible Backblaze B2).
+     */
+    private function s3(): S3Client
     {
-        $endpoint = env('B2_ENDPOINT'); // https://s3.us-east-005.backblazeb2.com
-        $bucket = env('B2_BUCKET'); // 5-flix
-
-        // Remove leading slash if exists
-        $filePath = ltrim($filePath, '/');
-
-        return "{$endpoint}/{$bucket}/{$filePath}";
+        return new S3Client([
+            'version'                 => 'latest',
+            'region'                  => env('B2_REGION', 'us-east-005'),
+            'endpoint'                => env('B2_ENDPOINT', 'https://s3.us-east-005.backblazeb2.com'),
+            'use_path_style_endpoint' => filter_var(env('B2_USE_PATH_STYLE', true), FILTER_VALIDATE_BOOLEAN),
+            'credentials' => [
+                'key'    => env('B2_KEY_ID'),
+                'secret' => env('B2_APPLICATION_KEY'),
+            ],
+        ]);
     }
 
     /**
-     * Stream video file from B2
+     * Normalisasi nilai kolom DB menjadi S3 object key (path di dalam bucket).
+     * Menerima:
+     *   - "videos/abc.mp4" (disarankan)
+     *   - URL S3 virtual-host: https://<bucket>.s3.us-east-005.backblazeb2.com/videos/abc.mp4
+     *   - URL S3 path-style  : https://s3.us-east-005.backblazeb2.com/<bucket>/videos/abc.mp4
+     * (Tidak mendukung friendly URL /file/... sesuai permintaanmu)
+     */
+    private function normalizeKey(string $value): ?string
+    {
+        $value = trim($value);
+        if ($value === '') return null;
+
+        // Jika sudah berupa key relatif
+        if (!Str::startsWith($value, ['http://', 'https://'])) {
+            return ltrim($value, '/');
+        }
+
+        // Jika berupa URL S3, ambil path
+        $p = parse_url($value);
+        if (!isset($p['path'])) return null;
+
+        $path = ltrim($p['path'], '/');          // e.g. "5-flix/videos/abc.mp4" atau "videos/abc.mp4"
+        $bucket = env('B2_BUCKET');
+
+        // Jika path-style (berawal dengan "<bucket>/"), buang prefix bucket
+        if ($bucket && Str::startsWith($path, $bucket . '/')) {
+            return substr($path, strlen($bucket) + 1);
+        }
+
+        // Kalau virtual-host, path sudah langsung "videos/abc.mp4"
+        return $path;
+    }
+
+    /**
+     * Peta ekstensi → MIME (untuk ResponseContentType).
+     */
+    private function guessVideoMime(string $key): string
+    {
+        $ext = strtolower(pathinfo($key, PATHINFO_EXTENSION));
+        return match ($ext) {
+            'mp4'  => 'video/mp4',
+            'm4v'  => 'video/x-m4v',
+            'mkv'  => 'video/x-matroska',
+            'webm' => 'video/webm',
+            'avi'  => 'video/x-msvideo',
+            'mov'  => 'video/quicktime',
+            '3gp'  => 'video/3gpp',
+            'ts'   => 'video/mp2t',
+            'flv'  => 'video/x-flv',
+            default => 'application/octet-stream', // fallback aman
+        };
+    }
+
+    private function guessImageMime(string $key): string
+    {
+        $ext = strtolower(pathinfo($key, PATHINFO_EXTENSION));
+        return match ($ext) {
+            'jpg', 'jpeg' => 'image/jpeg',
+            'png'         => 'image/png',
+            'webp'        => 'image/webp',
+            default       => 'image/jpeg',
+        };
+    }
+
+    /**
+     * Buat Pre-Signed URL (SigV4) untuk objek di B2 S3.
+     * $ttlSeconds: 60..3600
+     * Bisa override ResponseContentType agar pemutar/browser tahu MIME.
+     */
+    private function presign(string $key, int $ttlSeconds = 600, ?string $responseContentType = null): string
+    {
+        $ttlSeconds = max(60, min($ttlSeconds, 3600));
+
+        $bucket = env('B2_BUCKET');
+        $s3 = $this->s3();
+
+        $params = [
+            'Bucket' => $bucket,
+            'Key'    => $key,
+        ];
+        if ($responseContentType) {
+            $params['ResponseContentType'] = $responseContentType;
+        }
+
+        $cmd = $s3->getCommand('GetObject', $params);
+        $req = $s3->createPresignedRequest($cmd, '+' . $ttlSeconds . ' seconds');
+        return (string) $req->getUri();
+    }
+
+    /**
+     * HEAD untuk memastikan objek ada (opsional tapi bagus agar 404 cepat).
+     */
+    private function assertObjectExists(string $key): void
+    {
+        $bucket = env('B2_BUCKET');
+        $this->s3()->headObject([
+            'Bucket' => $bucket,
+            'Key'    => $key,
+        ]);
+    }
+
+    /**
+     * GET /api/videos/{id}/stream
+     * Redirect 302 (atau JSON) ke Pre-Signed URL. Range ditangani langsung oleh B2.
+     * Query:
+     *   - ttl=600 (detik, 60..3600)
+     *   - json=1  (kembalikan {url,expires_in} alih-alih redirect)
      */
     public function streamVideo(Request $request, $id)
     {
         try {
-            // Get video from cache or database
-            $video = Cache::remember("video_stream.{$id}", 1800, function () use ($id) {
-                return Video::select(['id', 'title', 'video_url', 'duration', 'genre', 'year'])
-                           ->findOrFail($id);
+            $video = Cache::remember("video_stream_meta.$id", 1800, function () use ($id) {
+                return Video::select(['id', 'video_url'])->findOrFail($id);
             });
 
-            // Extract file path from stored URL
-            $videoUrl = $video->video_url;
-            $filePath = $this->extractFilePathFromUrl($videoUrl, 'videos');
+            $key = $this->normalizeKey((string) $video->video_url);
+            if (!$key) {
+                return response()->json(['success' => false, 'message' => 'Invalid video path'], 400);
+            }
 
-            if (!$filePath) {
+            // Pastikan objek ada (supaya kalau salah, 404 cepat)
+            $this->assertObjectExists($key);
+
+            $ttl  = (int) $request->query('ttl', 600);
+            $mime = $this->guessVideoMime($key);
+            $url  = $this->presign($key, $ttl, $mime);
+
+            if ($request->boolean('json')) {
                 return response()->json([
-                    'success' => false,
-                    'message' => 'Invalid video path'
-                ], 400);
+                    'success' => true,
+                    'data' => [
+                        'url'        => $url,
+                        'expires_in' => max(60, min($ttl, 3600)),
+                    ],
+                ]);
             }
 
-            // Generate S3-compatible streaming URL
-            $streamUrl = $this->getS3Url($filePath);
-
-            // Get file headers to check if file exists
-            $headResponse = Http::withHeaders([
-                'Authorization' => $this->getB2AuthHeader()
-            ])->head($streamUrl);
-
-            if (!$headResponse->successful()) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Video file not found'
-                ], 404);
-            }
-
-            $contentLength = $headResponse->header('Content-Length') ?: 0;
-            $contentType = $headResponse->header('Content-Type') ?: 'video/mp4';
-
-            // Handle range requests for video streaming
-            $range = $request->header('Range');
-            if ($range) {
-                return $this->handleRangeRequest($streamUrl, $range, $contentLength, $contentType);
-            }
-
-            // Return full video stream
-            return $this->streamFullVideo($streamUrl, $contentType, $contentLength);
+            return redirect()->away($url, 302);
 
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Video not found'
-            ], 404);
+            return response()->json(['success' => false, 'message' => 'Video not found'], 404);
+        } catch (AwsException $e) {
+            // bisa dilog: $e->getAwsErrorCode(), $e->getMessage()
+            return response()->json(['success' => false, 'message' => 'S3 error'], 502);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Server error'
-            ], 500);
+            return response()->json(['success' => false, 'message' => 'Server error'], 500);
         }
     }
 
     /**
-     * Get video thumbnail from B2
+     * GET /api/videos/{id}/thumbnail
+     * Redirect 302 (atau JSON) ke Pre-Signed URL thumbnail.
      */
-    public function getThumbnail($id)
+    public function getThumbnail(Request $request, $id)
     {
         try {
-            // Get video from cache or database
-            $video = Cache::remember("video_thumbnail.{$id}", 3600, function () use ($id) {
-                return Video::select(['id', 'title', 'thumbnail_url'])
-                           ->findOrFail($id);
+            $video = Cache::remember("video_thumbnail_meta.$id", 3600, function () use ($id) {
+                return Video::select(['id', 'thumbnail_url'])->findOrFail($id);
             });
 
-            // Extract file path from stored URL
-            $thumbnailUrl = $video->thumbnail_url;
-            $filePath = $this->extractFilePathFromUrl($thumbnailUrl, 'thumbnails');
-
-            if (!$filePath) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Invalid thumbnail path'
-                ], 400);
+            $key = $this->normalizeKey((string) $video->thumbnail_url);
+            if (!$key) {
+                return response()->json(['success' => false, 'message' => 'Invalid thumbnail path'], 400);
             }
 
-            // Generate S3-compatible URL
-            $streamUrl = $this->getS3Url($filePath);
+            $this->assertObjectExists($key);
 
-            // Get and stream thumbnail
-            $response = Http::withHeaders([
-                'Authorization' => $this->getB2AuthHeader()
-            ])->get($streamUrl);
+            $ttl  = (int) $request->query('ttl', 600);
+            $mime = $this->guessImageMime($key);
+            $url  = $this->presign($key, $ttl, $mime);
 
-            if (!$response->successful()) {
+            if ($request->boolean('json')) {
                 return response()->json([
-                    'success' => false,
-                    'message' => 'Thumbnail not found'
-                ], 404);
+                    'success' => true,
+                    'data' => [
+                        'url'        => $url,
+                        'expires_in' => max(60, min($ttl, 3600)),
+                    ],
+                ]);
             }
 
-            $contentType = $response->header('Content-Type') ?: 'image/jpeg';
-
-            return response($response->body())
-                ->header('Content-Type', $contentType)
-                ->header('Cache-Control', 'public, max-age=86400')
-                ->header('Expires', now()->addDay()->toRfc7231String());
+            return redirect()->away($url, 302);
 
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Video not found'
-            ], 404);
+            return response()->json(['success' => false, 'message' => 'Video not found'], 404);
+        } catch (AwsException $e) {
+            return response()->json(['success' => false, 'message' => 'S3 error'], 502);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Server error'
-            ], 500);
+            return response()->json(['success' => false, 'message' => 'Server error'], 500);
         }
     }
 
     /**
-     * Get video information with streaming URLs
+     * GET /api/videos/{id}/info
+     * Kembalikan metadata + pre-signed URL (TTL singkat untuk preview).
      */
     public function getVideoInfo($id)
     {
         try {
-            $video = Cache::remember("video_info.{$id}", 1800, function () use ($id) {
+            $video = Cache::remember("video_info.$id", 1800, function () use ($id) {
                 return Video::findOrFail($id);
             });
 
-            // Calculate duration in minutes
-            $durationMinutes = round($video->duration / 60, 1);
+            $videoKey = $video->video_url ? $this->normalizeKey((string) $video->video_url) : null;
+            $thumbKey = $video->thumbnail_url ? $this->normalizeKey((string) $video->thumbnail_url) : null;
+
+            $streamUrl    = $videoKey ? $this->presign($videoKey, 600, $this->guessVideoMime($videoKey)) : null;
+            $thumbnailUrl = $thumbKey ? $this->presign($thumbKey, 600, $this->guessImageMime($thumbKey)) : null;
+
+            $duration = (int) ($video->duration ?? 0);
+            $minutes  = round($duration / 60, 1);
 
             return response()->json([
                 'success' => true,
                 'data' => [
-                    'id' => $video->id,
-                    'title' => $video->title,
-                    'genre' => $video->genre,
-                    'description' => $video->description,
-                    'duration' => $video->duration, // seconds
-                    'duration_minutes' => $durationMinutes,
-                    'duration_formatted' => $this->formatDuration($video->duration),
-                    'year' => $video->year,
-                    'is_featured' => $video->is_featured,
-                    'stream_url' => route('api.video.stream', $id),
-                    'thumbnail_url' => route('api.video.thumbnail', $id),
-                    'created_at' => $video->created_at,
-                    'updated_at' => $video->updated_at
-                ]
+                    'id'                 => $video->id,
+                    'title'              => $video->title,
+                    'genre'              => $video->genre,
+                    'description'        => $video->description,
+                    'duration'           => $duration,
+                    'duration_minutes'   => $minutes,
+                    'duration_formatted' => $this->formatDuration($duration),
+                    'year'               => $video->year,
+                    'is_featured'        => (bool) $video->is_featured,
+                    'stream_url'         => $streamUrl,
+                    'thumbnail_url'      => $thumbnailUrl,
+                    'api_stream'         => route('video.stream', ['id' => $video->id]),
+                    'api_thumbnail'      => route('video.thumbnail', ['id' => $video->id]),
+                    'created_at'         => $video->created_at,
+                    'updated_at'         => $video->updated_at,
+                ],
             ]);
 
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Video not found'
-            ], 404);
+            return response()->json(['success' => false, 'message' => 'Video not found'], 404);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Server error'
-            ], 500);
+            return response()->json(['success' => false, 'message' => 'Server error'], 500);
         }
     }
 
-    /**
-     * Extract file path from stored URL (S3-compatible only)
-     */
-    private function extractFilePathFromUrl($url, $expectedFolder)
+    private function formatDuration(int $seconds): string
     {
-        if (!$url) return null;
-
-        $parsedUrl = parse_url($url);
-
-        // Handle S3-compatible URL format only
-        if (isset($parsedUrl['path'])) {
-            $filePath = ltrim($parsedUrl['path'], '/');
-            $bucketName = env('B2_BUCKET');
-
-            // Remove bucket name from path if present
-            if ($bucketName && strpos($filePath, $bucketName . '/') === 0) {
-                $filePath = substr($filePath, strlen($bucketName) + 1);
-            }
-
-            return $filePath;
-        }
-
-        return null;
-    }
-
-    /**
-     * Generate B2 authorization header
-     */
-    private function getB2AuthHeader()
-    {
-        $keyId = env('B2_KEY_ID');
-        $applicationKey = env('B2_APPLICATION_KEY');
-
-        return 'Basic ' . base64_encode($keyId . ':' . $applicationKey);
-    }
-
-    /**
-     * Handle HTTP Range requests for video streaming
-     */
-    private function handleRangeRequest($streamUrl, $range, $contentLength, $contentType)
-    {
-        // Parse range header (e.g., "bytes=0-1023")
-        if (!preg_match('/bytes=(\d+)-(\d*)/', $range, $matches)) {
-            return response('Invalid range', 416);
-        }
-
-        $start = intval($matches[1]);
-        $end = !empty($matches[2]) ? intval($matches[2]) : $contentLength - 1;
-
-        // Validate range
-        if ($start >= $contentLength || $end >= $contentLength || $start > $end) {
-            return response('Range not satisfiable', 416)
-                ->header('Content-Range', "bytes */{$contentLength}");
-        }
-
-        // Get partial content from B2
-        $response = Http::withHeaders([
-            'Authorization' => $this->getB2AuthHeader(),
-            'Range' => "bytes={$start}-{$end}"
-        ])->get($streamUrl);
-
-        if (!$response->successful()) {
-            return response('Error fetching content', 500);
-        }
-
-        $partialLength = $end - $start + 1;
-
-        return response($response->body(), 206)
-            ->header('Content-Type', $contentType)
-            ->header('Content-Length', $partialLength)
-            ->header('Content-Range', "bytes {$start}-{$end}/{$contentLength}")
-            ->header('Accept-Ranges', 'bytes')
-            ->header('Cache-Control', 'no-cache');
-    }
-
-    /**
-     * Stream full video
-     */
-    private function streamFullVideo($streamUrl, $contentType, $contentLength)
-    {
-        $response = Http::withHeaders([
-            'Authorization' => $this->getB2AuthHeader()
-        ])->get($streamUrl);
-
-        if (!$response->successful()) {
-            return response('Video not found', 404);
-        }
-
-        return response($response->body())
-            ->header('Content-Type', $contentType)
-            ->header('Content-Length', $contentLength)
-            ->header('Accept-Ranges', 'bytes')
-            ->header('Cache-Control', 'no-cache');
-    }
-
-    /**
-     * Format duration to human readable format
-     */
-    private function formatDuration($seconds)
-    {
-        $hours = floor($seconds / 3600);
-        $minutes = floor(($seconds % 3600) / 60);
-        $remainingSeconds = $seconds % 60;
-
-        if ($hours > 0) {
-            return sprintf('%d:%02d:%02d', $hours, $minutes, $remainingSeconds);
-        } else {
-            return sprintf('%02d:%02d', $minutes, $remainingSeconds);
-        }
+        $h = intdiv($seconds, 3600);
+        $m = intdiv($seconds % 3600, 60);
+        $s = $seconds % 60;
+        return $h > 0 ? sprintf('%d:%02d:%02d', $h, $m, $s) : sprintf('%02d:%02d', $m, $s);
     }
 }
