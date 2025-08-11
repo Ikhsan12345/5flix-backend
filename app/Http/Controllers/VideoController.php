@@ -112,6 +112,7 @@ class VideoController extends Controller
                     'id'                   => $video->id,
                     'title'                => $video->title,
                     'genre'                => $video->genre,
+                    'descripton'           => $video->description,
                     'duration'             => $video->duration,
                     'duration_minutes'     => $durationMinutes,
                     'duration_formatted'   => $this->formatDuration($video->duration ?? 0),
