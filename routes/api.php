@@ -67,4 +67,12 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
             ], 500);
         }
     });
+
+    Route::get('/test-config', function () {
+        return [
+            'post_max_size' => ini_get('post_max_size'),
+            'upload_max_filesize' => ini_get('upload_max_filesize'),
+            'max_execution_time' => ini_get('max_execution_time'),
+        ];
+    });
 });
