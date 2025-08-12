@@ -68,11 +68,25 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         }
     });
 
-    Route::get('/test-config', function () {
-        return [
+    // routes/web.php
+Route::get('/test-simple', function () {
+    return 'Laravel is working!';
+});
+
+Route::get('/test-config', function () {
+    try {
+        return response()->json([
+            'status' => 'success',
             'post_max_size' => ini_get('post_max_size'),
             'upload_max_filesize' => ini_get('upload_max_filesize'),
             'max_execution_time' => ini_get('max_execution_time'),
-        ];
-    });
+            'memory_limit' => ini_get('memory_limit'),
+        ]);
+    } catch (Exception $e) {
+        return response()->json([
+            'status' => 'error',
+            'message' => $e->getMessage()
+        ], 500);
+    }
+});
 });
