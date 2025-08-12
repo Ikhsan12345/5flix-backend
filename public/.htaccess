@@ -32,6 +32,7 @@ php_value max_file_uploads 20
     RewriteRule ^ index.php [L]
 </IfModule>
 
+
 # Security Headers untuk File Upload
 <IfModule mod_headers.c>
     # Allow large content length
@@ -55,3 +56,14 @@ php_value max_file_uploads 20
     php_value upload_max_filesize 2G
     php_value post_max_size 2G
 </Files>
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ index.php [L]
+</IfModule>
+
+# PHP Settings
+php_value post_max_size 50M
+php_value upload_max_filesize 50M

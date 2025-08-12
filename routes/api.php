@@ -89,4 +89,31 @@ Route::get('/test-config', function () {
         ], 500);
     }
 });
+Route::get('/test-env', function () {
+    return [
+        'APP_ENV' => env('APP_ENV'),
+        'APP_DEBUG' => env('APP_DEBUG'),
+        'APP_KEY' => env('APP_KEY') ? 'SET' : 'NOT SET',
+        'DB_CONNECTION' => env('DB_CONNECTION'),
+    ];
+});
+Route::get('/test-permissions', function () {
+    $paths = [
+        'storage/logs' => storage_path('logs'),
+        'storage/framework/cache' => storage_path('framework/cache'),
+        'storage/framework/sessions' => storage_path('framework/sessions'),
+        'storage/framework/views' => storage_path('framework/views'),
+    ];
+
+    $result = [];
+    foreach ($paths as $name => $path) {
+        $result[$name] = [
+            'exists' => file_exists($path),
+            'writable' => is_writable($path),
+            'permissions' => substr(sprintf('%o', fileperms($path)), -4) ?? 'N/A'
+        ];
+    }
+
+    return $result;
+});
 });
