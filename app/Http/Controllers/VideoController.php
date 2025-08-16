@@ -85,65 +85,46 @@ class VideoController extends Controller
 
     // Tambahkan Request agar bisa pakai query (?embed_signed=1 dll)
     public function index(Request $request)
-    {
-        try {
-            $videos = CacheService::getVideos();
+{
+    try {
+        $videos = CacheService::getVideos();
 
-            $embedSigned = $request->boolean('embed_signed', false);
-            $ttl         = (int) $request->query('ttl', 600);
+        $videos = $videos->map(function ($video) {
+            $videoKey = $this->normalizeKey($video->video_url ?? '');
+            $thumbKey = $this->normalizeKey($video->thumbnail_url ?? '');
 
-            $videos = $videos->map(function ($video) use ($embedSigned, $ttl) {
-                $durationMinutes = round(($video->duration ?? 0) / 60, 1);
+            return [
+                'id' => $video->id,
+                'title' => $video->title,
+                'genre' => $video->genre,
+                'description' => $video->description,
+                'duration' => $video->duration,
+                'duration_minutes' => round(($video->duration ?? 0) / 60, 1),
+                'duration_formatted' => $this->formatDuration($video->duration ?? 0),
+                'year' => $video->year,
+                'is_featured' => (bool) $video->is_featured,
 
-                // Normalisasi key dari DB (handle lama yang masih URL)
-                $videoKey = $this->normalizeKey($video->video_url ?? '');
-                $thumbKey = $this->normalizeKey($video->thumbnail_url ?? '');
+                // Direct B2 URLs dengan TTL panjang
+                'stream_url' => $videoKey ? $this->presigned($videoKey, 3600, ['ResponseContentType' => $this->guessVideoMime($videoKey)]) : null,
+                'thumbnail_url' => $thumbKey ? $this->presigned($thumbKey, 3600, ['ResponseContentType' => $this->guessImageMime($thumbKey)]) : null,
 
-                // Siapkan pre-signed opsional (langsung siap pakai di FE)
-                $signedStream   = $embedSigned && $videoKey
-                    ? $this->presigned($videoKey, $ttl, ['ResponseContentType' => $this->guessVideoMime($videoKey)])
-                    : null;
+                // Backup endpoint (untuk refresh token jika perlu)
+                'stream_endpoint' => route('api.video.stream', $video->id),
+                'thumbnail_endpoint' => route('api.video.thumbnail', $video->id),
+            ];
+        });
 
-                $signedThumb    = $embedSigned && $thumbKey
-                    ? $this->presigned($thumbKey, $ttl, ['ResponseContentType' => $this->guessImageMime($thumbKey)])
-                    : null;
-
-                return [
-                    'id'                   => $video->id,
-                    'title'                => $video->title,
-                    'genre'                => $video->genre,
-                    'descripton'           => $video->description,
-                    'duration'             => $video->duration,
-                    'duration_minutes'     => $durationMinutes,
-                    'duration_formatted'   => $this->formatDuration($video->duration ?? 0),
-                    'year'                 => $video->year,
-                    'is_featured'          => (bool) $video->is_featured,
-
-                    // Rute streaming (redirect → pre-signed) untuk integrasi FE
-                    'stream_url'           => route('api.video.stream', $video->id),
-                    'thumbnail_url'        => route('api.video.thumbnail', $video->id),
-
-                    // Pre-signed langsung (opsional, aktifkan dengan ?embed_signed=1)
-                    'signed_stream_url'    => $signedStream,
-                    'signed_thumbnail_url' => $signedThumb,
-
-                    // Simpan nilai asli untuk admin (BERISI KEY sekarang)
-                    'original_video_url'      => $videoKey,
-                    'original_thumbnail_url'  => $thumbKey,
-                ];
-            });
-
-            return response()->json([
-                'success' => true,
-                'data' => $videos
-            ]);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Server error'
-            ], 500);
-        }
+        return response()->json([
+            'success' => true,
+            'data' => $videos
+        ]);
+    } catch (\Exception $e) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Server error'
+        ], 500);
     }
+}
 
     public function show(Request $request, $id)
     {
@@ -201,6 +182,92 @@ class VideoController extends Controller
             return response()->json(['success' => false, 'message' => 'Server error'], 500);
         }
     }
+    public function getUploadUrls(Request $request)
+{
+    if (!$request->user() || $request->user()->role !== 'admin') {
+        return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+    }
+
+    $validated = $request->validate([
+        'video_filename' => 'required|string',
+        'thumb_filename' => 'required|string',
+        'content_type_video' => 'required|string',
+        'content_type_thumb' => 'required|string',
+    ]);
+
+    $videoKey = 'videos/' . uniqid() . '_' . $validated['video_filename'];
+    $thumbKey = 'thumbnails/' . uniqid() . '_' . $validated['thumb_filename'];
+
+    // Generate pre-signed URLs untuk upload
+    $videoUploadUrl = Storage::disk('b2')->temporaryUploadUrl(
+        $videoKey,
+        now()->addMinutes(30),
+        ['ContentType' => $validated['content_type_video']]
+    );
+
+    $thumbUploadUrl = Storage::disk('b2')->temporaryUploadUrl(
+        $thumbKey,
+        now()->addMinutes(30),
+        ['ContentType' => $validated['content_type_thumb']]
+    );
+
+    return response()->json([
+        'success' => true,
+        'data' => [
+            'video_upload_url' => $videoUploadUrl,
+            'thumb_upload_url' => $thumbUploadUrl,
+            'video_key' => $videoKey,
+            'thumb_key' => $thumbKey,
+            'expires_in' => 1800
+        ]
+    ]);
+}
+
+public function confirmUpload(Request $request)
+{
+    if (!$request->user() || $request->user()->role !== 'admin') {
+        return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+    }
+
+    $validated = $request->validate([
+        'title' => 'required|string|max:255',
+        'genre' => 'required|string|max:100',
+        'description' => 'nullable|string',
+        'duration' => 'required|integer|min:1',
+        'year' => 'required|integer|min:1900|max:2030',
+        'is_featured' => 'nullable|in:0,1',
+        'video_key' => 'required|string',
+        'thumb_key' => 'required|string',
+    ]);
+
+    // Verifikasi file sudah terupload (optional)
+    if (!Storage::disk('b2')->exists($validated['video_key'])) {
+        return response()->json(['success' => false, 'message' => 'Video upload not completed'], 400);
+    }
+
+    $video = Video::create([
+        'title' => $validated['title'],
+        'genre' => $validated['genre'],
+        'description' => $validated['description'],
+        'duration' => (int) $validated['duration'],
+        'year' => (int) $validated['year'],
+        'is_featured' => $validated['is_featured'] == '1',
+        'video_url' => $validated['video_key'],
+        'thumbnail_url' => $validated['thumb_key'],
+    ]);
+
+    CacheService::clearVideoCache($video->id);
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Video berhasil dibuat',
+        'data' => [
+            'id' => $video->id,
+            'title' => $video->title,
+            // ... response data lainnya
+        ]
+    ]);
+}
 
     /** ========== WRITE ========== */
 
