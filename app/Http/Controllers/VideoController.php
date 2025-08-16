@@ -274,6 +274,7 @@ class VideoController extends Controller
         ]);
     }
 
+
     /** ========== WRITE ========== */
 
     public function store(Request $request)
@@ -501,48 +502,90 @@ class VideoController extends Controller
     }
 
     public function download(Request $request, $id)
-    {
-        try {
-            $video = Video::findOrFail($id);
+{
+    try {
+        $video = Video::findOrFail($id);
 
-            if (!$request->user()) {
-                return response()->json(['success' => false, 'message' => 'Authentication required'], 401);
-            }
-
-            $videoKey = $this->normalizeKey($video->video_url ?? '');
-            if (!$videoKey) {
-                return response()->json(['success' => false, 'message' => 'Invalid video key'], 400);
-            }
-
-            $mime = $this->guessVideoMime($videoKey);
-            $fname = Str::slug($video->title ?? 'video') . '.' . strtolower(pathinfo($videoKey, PATHINFO_EXTENSION));
-
-            $url = $this->presigned($videoKey, 1800, [
-                'ResponseContentType' => $mime,
-                'ResponseContentDisposition' => 'attachment; filename="' . $fname . '"',
-            ]);
-            $size = Storage::disk('b2')->size($videoKey);
-            return response()->json([
-                'success' => true,
-                'data' => [
-                    'video_id' => $video->id,
-                    'title' => $video->title,
-                    'download_url' => $url, // pre-signed (langsung unduh)
-                    'thumbnail_url' => route('api.video.thumbnail', $video->id),
-                    'file_size' => $size, // bytes
-                    'expires_in' => 1800,
-                    'duration' => $video->duration,
-                    'genre' => $video->genre,
-                    'year' => $video->year
-                ]
-            ]);
-
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json(['success' => false, 'message' => 'Video tidak ditemukan'], 404);
-        } catch (\Exception $e) {
-            return response()->json(['success' => false, 'message' => 'Server error'], 500);
+        if (!$request->user()) {
+            return response()->json(['success' => false, 'message' => 'Authentication required'], 401);
         }
+
+        $videoKey = $this->normalizeKey($video->video_url ?? '');
+        if (!$videoKey) {
+            return response()->json(['success' => false, 'message' => 'Invalid video key'], 400);
+        }
+
+        $thumbKey = $this->normalizeKey($video->thumbnail_url ?? '');
+
+        // Cek parameter untuk tipe download
+        $includeThumb = $request->boolean('include_thumbnail', true); // default true
+        $ttl = (int) $request->query('ttl', 1800); // 30 menit default
+
+        $videoMime = $this->guessVideoMime($videoKey);
+        $videoExt = strtolower(pathinfo($videoKey, PATHINFO_EXTENSION));
+        $baseFilename = Str::slug($video->title ?? 'video');
+
+        // Generate pre-signed URL untuk video
+        $videoUrl = $this->presigned($videoKey, $ttl, [
+            'ResponseContentType' => $videoMime,
+            'ResponseContentDisposition' => 'attachment; filename="' . $baseFilename . '.' . $videoExt . '"',
+        ]);
+
+        $videoSize = Storage::disk('b2')->size($videoKey);
+
+        $response = [
+            'success' => true,
+            'data' => [
+                'video_id' => $video->id,
+                'title' => $video->title,
+                'genre' => $video->genre,
+                'description' => $video->description,
+                'duration' => $video->duration,
+                'duration_formatted' => $this->formatDuration($video->duration ?? 0),
+                'year' => $video->year,
+                'video' => [
+                    'download_url' => $videoUrl,
+                    'filename' => $baseFilename . '.' . $videoExt,
+                    'size' => $videoSize,
+                    'mime_type' => $videoMime,
+                    'key' => $videoKey, // untuk referensi flutter
+                ],
+                'expires_in' => $ttl,
+                'expires_at' => now()->addSeconds($ttl)->toISOString(),
+            ]
+        ];
+
+        // Tambahkan thumbnail jika diminta dan tersedia
+        if ($includeThumb && $thumbKey && Storage::disk('b2')->exists($thumbKey)) {
+            $thumbMime = $this->guessImageMime($thumbKey);
+            $thumbExt = strtolower(pathinfo($thumbKey, PATHINFO_EXTENSION));
+
+            $thumbUrl = $this->presigned($thumbKey, $ttl, [
+                'ResponseContentType' => $thumbMime,
+                'ResponseContentDisposition' => 'attachment; filename="' . $baseFilename . '_thumb.' . $thumbExt . '"',
+            ]);
+
+            $thumbSize = Storage::disk('b2')->size($thumbKey);
+
+            $response['data']['thumbnail'] = [
+                'download_url' => $thumbUrl,
+                'filename' => $baseFilename . '_thumb.' . $thumbExt,
+                'size' => $thumbSize,
+                'mime_type' => $thumbMime,
+                'key' => $thumbKey, // untuk referensi flutter
+            ];
+        } else {
+            $response['data']['thumbnail'] = null;
+        }
+
+        return response()->json($response);
+
+    } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+        return response()->json(['success' => false, 'message' => 'Video tidak ditemukan'], 404);
+    } catch (\Exception $e) {
+        return response()->json(['success' => false, 'message' => 'Server error'], 500);
     }
+}
 
     /** ========== Utils ========== */
 
