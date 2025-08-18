@@ -200,32 +200,84 @@ class VideoController extends Controller
             'content_type_thumb' => 'required|string',
         ]);
 
-        $videoKey = 'videos/' . uniqid() . '_' . $validated['video_filename'];
-        $thumbKey = 'thumbnails/' . uniqid() . '_' . $validated['thumb_filename'];
+        try {
+            $videoKey = 'videos/' . uniqid() . '_' . $validated['video_filename'];
+            $thumbKey = 'thumbnails/' . uniqid() . '_' . $validated['thumb_filename'];
 
-        // Generate pre-signed URLs untuk upload
-        $videoUploadUrl = Storage::disk('b2')->temporaryUploadUrl(
-            $videoKey,
-            now()->addMinutes(30),
-            ['ContentType' => $validated['content_type_video']]
-        );
+            // Generate pre-signed URLs untuk upload - FIXED VERSION
+            $disk = Storage::disk('b2');
 
-        $thumbUploadUrl = Storage::disk('b2')->temporaryUploadUrl(
-            $thumbKey,
-            now()->addMinutes(30),
-            ['ContentType' => $validated['content_type_thumb']]
-        );
+            // Method 1: Try using temporaryUploadUrl with proper error handling
+            try {
+                $videoUploadUrl = $disk->temporaryUploadUrl(
+                    $videoKey,
+                    now()->addMinutes(30),
+                    ['ContentType' => $validated['content_type_video']]
+                );
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'video_upload_url' => $videoUploadUrl,
-                'thumb_upload_url' => $thumbUploadUrl,
-                'video_key' => $videoKey,
-                'thumb_key' => $thumbKey,
-                'expires_in' => 1800
-            ]
-        ]);
+                $thumbUploadUrl = $disk->temporaryUploadUrl(
+                    $thumbKey,
+                    now()->addMinutes(30),
+                    ['ContentType' => $validated['content_type_thumb']]
+                );
+
+                // If Laravel returns array, extract URL
+                if (is_array($videoUploadUrl) && isset($videoUploadUrl['url'])) {
+                    $videoUploadUrl = $videoUploadUrl['url'];
+                }
+                if (is_array($thumbUploadUrl) && isset($thumbUploadUrl['url'])) {
+                    $thumbUploadUrl = $thumbUploadUrl['url'];
+                }
+
+            } catch (\Exception $e) {
+                \Log::error('temporaryUploadUrl failed: ' . $e->getMessage());
+
+                // Method 2: Fallback - Generate manual pre-signed URL
+                $videoUploadUrl = $this->generateManualUploadUrl($videoKey, $validated['content_type_video']);
+                $thumbUploadUrl = $this->generateManualUploadUrl($thumbKey, $validated['content_type_thumb']);
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'video_upload_url' => $videoUploadUrl,
+                    'thumb_upload_url' => $thumbUploadUrl,
+                    'video_key' => $videoKey,
+                    'thumb_key' => $thumbKey,
+                    'expires_in' => 1800
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Upload URL generation failed: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to generate upload URLs: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // Helper method for manual upload URL generation
+    private function generateManualUploadUrl(string $key, string $contentType): string
+    {
+        try {
+            // Use the same S3 client that Laravel uses
+            $client = Storage::disk('b2')->getClient();
+            $bucket = env('B2_BUCKET');
+
+            $cmd = $client->getCommand('PutObject', [
+                'Bucket' => $bucket,
+                'Key' => $key,
+                'ContentType' => $contentType,
+            ]);
+
+            $request = $client->createPresignedRequest($cmd, '+30 minutes');
+            return (string) $request->getUri();
+
+        } catch (\Exception $e) {
+            \Log::error('Manual upload URL generation failed: ' . $e->getMessage());
+            throw new \Exception('Could not generate upload URL for: ' . $key);
+        }
     }
 
     public function confirmUpload(Request $request)
