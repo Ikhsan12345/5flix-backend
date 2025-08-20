@@ -40,4 +40,20 @@ class User extends Authenticatable
     {
         return 'username';
     }
+
+    /**
+     * Get the refresh tokens for the user.
+     */
+    public function refreshTokens()
+    {
+        return $this->hasMany(RefreshToken::class);
+    }
+
+    /**
+     * Get only valid (non-expired) refresh tokens for the user.
+     */
+    public function validRefreshTokens()
+    {
+        return $this->refreshTokens()->valid();
+    }
 }
